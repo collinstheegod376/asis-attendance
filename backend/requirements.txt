@@ -1,0 +1,9 @@
+fastapi[all]
+supabase
+python-dotenv
+face_recognition
+numpy
+pydantic
+pydantic-settings
+uvicorn
+python-multipart
