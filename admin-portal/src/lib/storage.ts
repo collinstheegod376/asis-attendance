@@ -401,7 +401,7 @@ export class AppStorage {
     const courses = getItem<Course[]>(STORAGE_KEYS.COURSES, []);
     const users = this.getUsers();
     const rosters = this.getCourseRosters();
-    const sessions = this.getSessions();
+    const sessions = getItem<LectureSession[]>(STORAGE_KEYS.SESSIONS, []);
 
     return courses.map(c => {
       const lecturer = users.find(u => u.id === c.lecturer_id);
@@ -557,7 +557,7 @@ export class AppStorage {
   static getSessions(): LectureSession[] {
     this.init();
     const sessions = getItem<LectureSession[]>(STORAGE_KEYS.SESSIONS, []);
-    const courses = this.getCourses();
+    const courses = getItem<Course[]>(STORAGE_KEYS.COURSES, []);
     const records = this.getAttendanceRecords();
 
     return sessions.map(s => {
