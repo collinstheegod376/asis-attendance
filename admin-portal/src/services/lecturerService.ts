@@ -288,7 +288,7 @@ export class LecturerService {
       updatedRoster = [...existingRosters, ...acceptedRows];
     }
 
-    localStorage.setItem(STORAGE_KEYS.COURSE_ROSTER, JSON.stringify(updatedRoster));
+    AppStorage.setRawItem(STORAGE_KEYS.COURSE_ROSTER, updatedRoster);
 
     // Audit log
     AppStorage.logAudit(
@@ -343,7 +343,7 @@ export class LecturerService {
     if (!entry) return { success: false, error: 'Student roster entry not found.' };
 
     const filtered = rosters.filter(r => r.id !== rosterId);
-    localStorage.setItem(STORAGE_KEYS.COURSE_ROSTER, JSON.stringify(filtered));
+    AppStorage.setRawItem(STORAGE_KEYS.COURSE_ROSTER, filtered);
 
     AppStorage.logAudit(
       actor.id,
@@ -405,7 +405,7 @@ export class LecturerService {
 
     const sessions = AppStorage.getSessions();
     sessions.unshift(newSession);
-    localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(sessions));
+    AppStorage.setRawItem(STORAGE_KEYS.SESSIONS, sessions);
 
     AppStorage.logAudit(
       actor.id,
@@ -440,7 +440,7 @@ export class LecturerService {
 
     session.status = 'closed';
     session.closed_at = new Date().toISOString();
-    localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(sessions));
+    AppStorage.setRawItem(STORAGE_KEYS.SESSIONS, sessions);
 
     AppStorage.logAudit(
       actor.id,

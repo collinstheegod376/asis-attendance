@@ -58,6 +58,17 @@ const DEFAULT_SETTINGS: SystemSettings = {
   updated_by: 'System Seed',
 };
 
+function pushKeysToServer(payload: Record<string, any>): void {
+  if (typeof window === 'undefined') return;
+  fetch('/api/local-sync', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).catch(() => {
+    // Ignore when running outside local dev server
+  });
+}
+
 function getItem<T>(key: string, defaultValue: T): T {
   try {
     const raw = localStorage.getItem(key);
@@ -69,15 +80,112 @@ function getItem<T>(key: string, defaultValue: T): T {
   }
 }
 
-function setItem<T>(key: string, value: T): void {
+function setItem<T>(key: string, value: T, skipServerPush = false): void {
   try {
     localStorage.setItem(key, JSON.stringify(value));
+    if (!skipServerPush) {
+      pushKeysToServer({ [key]: value });
+    }
   } catch (e) {
     console.error(`Failed to write to localStorage key: ${key}`, e);
   }
 }
 
+let syncStarted = false;
+
 export class AppStorage {
+  static setRawItem<T>(key: string, value: T): void {
+    setItem(key, value);
+  }
+
+  static startServerSync(): void {
+    if (syncStarted || typeof window === 'undefined') return;
+    syncStarted = true;
+
+    const runSync = async () => {
+      try {
+        const res = await fetch('/api/local-sync');
+        if (!res.ok) return;
+        const serverDb: Record<string, any> = await res.json();
+
+        const keysToPush: Record<string, any> = {};
+
+        // 1. Push any local keys that are missing or fuller than serverDb
+        const allKeys = [
+          STORAGE_KEYS.USERS,
+          STORAGE_KEYS.STUDENTS_MASTER,
+          STORAGE_KEYS.COURSES,
+          STORAGE_KEYS.COURSE_ROSTER,
+          STORAGE_KEYS.SESSIONS,
+          STORAGE_KEYS.ATTENDANCE,
+          STORAGE_KEYS.DEVICE_BINDINGS,
+          STORAGE_KEYS.DEVICE_EVENTS,
+          STORAGE_KEYS.AUDIT_LOGS,
+          STORAGE_KEYS.SETTINGS,
+        ];
+
+        for (const k of allKeys) {
+          const localRaw = localStorage.getItem(k);
+          if (!localRaw) continue;
+          const localVal = JSON.parse(localRaw);
+          const serverVal = serverDb[k];
+
+          if (serverVal === undefined) {
+            keysToPush[k] = localVal;
+          } else if (Array.isArray(localVal) && Array.isArray(serverVal)) {
+            if (localVal.length > 0 && serverVal.length === 0) {
+              keysToPush[k] = localVal;
+            }
+          }
+        }
+
+        if (Object.keys(keysToPush).length > 0) {
+          pushKeysToServer(keysToPush);
+        }
+
+        // 2. Pull student-generated records (Attendance, Device Bindings, Device Events, Audit Logs) from server into localStorage
+        const mergeArrayKey = (key: string) => {
+          const serverArr = serverDb[key];
+          if (!Array.isArray(serverArr) || serverArr.length === 0) return;
+          const localArr = getItem<any[]>(key, []);
+          const localMap = new Map(localArr.map((item: any) => [item.id, item]));
+          let changed = false;
+
+          for (const srvItem of serverArr) {
+            if (!srvItem || !srvItem.id) continue;
+            const existing = localMap.get(srvItem.id);
+            if (!existing) {
+              localArr.unshift(srvItem);
+              localMap.set(srvItem.id, srvItem);
+              changed = true;
+            } else if (
+              key === STORAGE_KEYS.DEVICE_BINDINGS &&
+              existing.last_seen_at !== srvItem.last_seen_at &&
+              existing.status === srvItem.status
+            ) {
+              Object.assign(existing, srvItem);
+              changed = true;
+            }
+          }
+
+          if (changed) {
+            setItem(key, localArr, true);
+          }
+        };
+
+        mergeArrayKey(STORAGE_KEYS.ATTENDANCE);
+        mergeArrayKey(STORAGE_KEYS.DEVICE_BINDINGS);
+        mergeArrayKey(STORAGE_KEYS.DEVICE_EVENTS);
+        mergeArrayKey(STORAGE_KEYS.AUDIT_LOGS);
+      } catch {
+        // Ignore offline errors
+      }
+    };
+
+    runSync();
+    setInterval(runSync, 2000);
+  }
+
   static init(): void {
     if (!localStorage.getItem(STORAGE_KEYS.INITIALIZED)) {
       // Initialize with ONLY seed admin and default settings. Zero demo data.
@@ -105,6 +213,7 @@ export class AppStorage {
       setItem<AuditLog[]>(STORAGE_KEYS.AUDIT_LOGS, [initAudit]);
       localStorage.setItem(STORAGE_KEYS.INITIALIZED, 'true');
     }
+    this.startServerSync();
   }
 
   // =================== USERS & AUTH ===================

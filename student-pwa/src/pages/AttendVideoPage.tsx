@@ -59,6 +59,7 @@ export const AttendVideoPage: React.FC = () => {
         submittedAt: new Date().toISOString(),
         fingerprint_hash: fpHash,
         device_id: deviceId,
+        selfie_data_url: attempt.selfie_data_url,
       };
 
       const result: any = await attendanceApi.submitAttendance(

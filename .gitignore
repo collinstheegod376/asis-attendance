@@ -5,6 +5,7 @@ git_token.txt
 *.pdf
 ADUN_Attendance_Executive_Guide.html
 generate_pdf.py
+.local-sync-db.json
 
 # Dependencies
 node_modules/
