@@ -147,7 +147,41 @@ CREATE TABLE IF NOT EXISTS lecture_sessions (
     CONSTRAINT check_session_times CHECK (expires_at > starts_at)
 );
 
--- 3.6 ATTENDANCE ATTEMPTS TABLE (Ephemeral 10-15 min student check-in session)
+-- 3.6 DEVICE BINDINGS TABLE (Strict Option 2 Device Binding per ADUN spec)
+CREATE TABLE IF NOT EXISTS device_bindings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    student_id UUID NOT NULL REFERENCES students_master(id) ON DELETE CASCADE,
+    fingerprint_hash TEXT NOT NULL,
+    device_id UUID NULL,
+    trusted_cookie_hash TEXT NULL,
+    user_agent TEXT NULL,
+    first_bound_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now()),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now()),
+    status device_binding_status NOT NULL DEFAULT 'active',
+    is_shared BOOLEAN NOT NULL DEFAULT false,
+    reset_by UUID NULL REFERENCES users(id) ON DELETE SET NULL,
+    reset_at TIMESTAMPTZ NULL
+);
+
+-- PARTIAL UNIQUE INDEX: One active binding per physical device fingerprint
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_binding_per_fingerprint 
+ON device_bindings (fingerprint_hash) 
+WHERE status = 'active';
+
+-- 3.7 DEVICE EVENTS TABLE (Append-only forensic audit for device binding lifecycle & proxy detection)
+CREATE TABLE IF NOT EXISTS device_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    student_id UUID NULL REFERENCES students_master(id) ON DELETE SET NULL,
+    fingerprint_hash TEXT NOT NULL,
+    event_type device_event_type NOT NULL,
+    reference_code TEXT NOT NULL,
+    metadata JSONB NULL DEFAULT '{}'::jsonb,
+    ip TEXT NULL,
+    user_agent TEXT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
+);
+
+-- 3.8 ATTENDANCE ATTEMPTS TABLE (Ephemeral 10-15 min student check-in session)
 CREATE TABLE IF NOT EXISTS attendance_attempts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id UUID NOT NULL REFERENCES lecture_sessions(id) ON DELETE CASCADE,
@@ -166,7 +200,7 @@ CREATE TABLE IF NOT EXISTS attendance_attempts (
     completed_at TIMESTAMPTZ NULL
 );
 
--- 3.7 ATTENDANCE RECORDS TABLE (Immutable signed records)
+-- 3.9 ATTENDANCE RECORDS TABLE (Immutable signed records)
 CREATE TABLE IF NOT EXISTS attendance_records (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id UUID NOT NULL REFERENCES lecture_sessions(id) ON DELETE CASCADE,
@@ -188,41 +222,7 @@ CREATE TABLE IF NOT EXISTS attendance_records (
     CONSTRAINT unique_session_student UNIQUE (session_id, student_id)
 );
 
--- 3.8 DEVICE BINDINGS TABLE (Strict Option 2 Device Binding per ADUN spec)
-CREATE TABLE IF NOT EXISTS device_bindings (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    student_id UUID NOT NULL REFERENCES students_master(id) ON DELETE CASCADE,
-    fingerprint_hash TEXT NOT NULL,
-    device_id UUID NULL,
-    trusted_cookie_hash TEXT NULL,
-    user_agent TEXT NULL,
-    first_bound_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now()),
-    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now()),
-    status device_binding_status NOT NULL DEFAULT 'active',
-    is_shared BOOLEAN NOT NULL DEFAULT false,
-    reset_by UUID NULL REFERENCES users(id) ON DELETE SET NULL,
-    reset_at TIMESTAMPTZ NULL
-);
-
--- PARTIAL UNIQUE INDEX: One active binding per physical device fingerprint
-CREATE UNIQUE INDEX IF NOT EXISTS one_active_binding_per_fingerprint 
-ON device_bindings (fingerprint_hash) 
-WHERE status = 'active';
-
--- 3.8b DEVICE EVENTS TABLE (Append-only forensic audit for device binding lifecycle & proxy detection)
-CREATE TABLE IF NOT EXISTS device_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    student_id UUID NULL REFERENCES students_master(id) ON DELETE SET NULL,
-    fingerprint_hash TEXT NOT NULL,
-    event_type device_event_type NOT NULL,
-    reference_code TEXT NOT NULL,
-    metadata JSONB NULL DEFAULT '{}'::jsonb,
-    ip TEXT NULL,
-    user_agent TEXT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
-);
-
--- 3.9 AUDIT LOGS TABLE (Immutable administrative audit trail)
+-- 3.10 AUDIT LOGS TABLE (Immutable administrative audit trail)
 CREATE TABLE IF NOT EXISTS audit_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     actor_id UUID NULL REFERENCES users(id) ON DELETE SET NULL,
@@ -234,7 +234,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
 );
 
--- 3.10 SETTINGS TABLE (System configuration singleton)
+-- 3.11 SETTINGS TABLE (System configuration singleton)
 CREATE TABLE IF NOT EXISTS settings (
     id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     location_mode location_mode NOT NULL DEFAULT 'evidence_only',
