@@ -6,6 +6,8 @@ git_token.txt
 ADUN_Attendance_Executive_Guide.html
 generate_pdf.py
 .local-sync-db.json
+adun_200L_computer_science_roster.*
+*.xlsx
 
 # Dependencies
 node_modules/

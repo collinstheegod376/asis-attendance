@@ -15,6 +15,7 @@ const STORAGE_KEYS = {
   COURSE_ROSTER: 'adun_course_roster',
   SESSIONS: 'adun_sessions',
   ATTENDANCE: 'adun_attendance_records',
+  STUDENTS_MASTER: 'adun_students_master',
 };
 
 // SHA-256 helper for session tokens
@@ -202,15 +203,36 @@ export class LecturerService {
     rawRows.forEach((row, idx) => {
       const rowNum = idx + 2; // Accounting for 1-based index and header row
       
-      // Look for matric number across possible common column names
-      const rawMatric = 
-        row.matric_no || 
-        row['Matric No'] || 
-        row['Matric Number'] || 
-        row['MATRIC_NO'] || 
-        row.matric || 
-        row.matriculation_number || 
-        '';
+      // Case-insensitive, whitespace-trimmed field extraction
+      const getVal = (keys: string[]) => {
+        for (const k of Object.keys(row)) {
+          const cleanK = k.trim().toLowerCase().replace(/[\s_-]+/g, '');
+          for (const targetKey of keys) {
+            const cleanTarget = targetKey.trim().toLowerCase().replace(/[\s_-]+/g, '');
+            if (cleanK === cleanTarget) {
+              return String(row[k] || '').trim();
+            }
+          }
+        }
+        return '';
+      };
+
+      const rawMatric = getVal([
+        'matric_no',
+        'matric',
+        'matricno',
+        'matriculation_no',
+        'matric_number',
+        'matric no',
+        'matric number',
+      ]);
+      const surname = getVal(['surname', 'last_name', 'lastname', 'last name']);
+      const firstName = getVal(['first_name', 'firstname', 'first name']);
+      const middleName = getVal(['middle_name', 'middlename', 'middle name']);
+      const otherNames = getVal(['other_names', 'other names', 'othername']);
+      const programVal = getVal(['program', 'programme', 'course_of_study', 'department']) || course.department || 'Computer Science';
+      const levelVal = getVal(['level', 'class', 'year']) || '200';
+      const emailVal = getVal(['email', 'email_address', 'student_email']);
 
       const cleanMatric = AppStorage.normalizeMatric(String(rawMatric));
 
@@ -236,19 +258,46 @@ export class LecturerService {
       }
       seenMatricsInBatch.add(cleanMatric);
 
-      // Validate against master student table
-      const masterStudent = studentsMaster.find(
+      // Validate against master student table or auto-register if details provided
+      let masterStudent = studentsMaster.find(
         s => AppStorage.normalizeMatric(s.matric_no) === cleanMatric
       );
 
       if (!masterStudent) {
-        rejectedRows.push({
-          row: rowNum,
-          matric_no: cleanMatric,
-          raw_row: row,
-          reason: 'Matric number does not exist in University Master Student directory.',
-        });
-        return;
+        // If the spreadsheet provides student name info, auto-create student in Master Directory
+        if (surname || firstName || otherNames) {
+          let resolvedFirst = firstName;
+          let resolvedMiddle = middleName;
+          if (!resolvedFirst && otherNames) {
+            const parts = otherNames.split(/\s+/).filter(Boolean);
+            resolvedFirst = parts[0] || '';
+            resolvedMiddle = parts.slice(1).join(' ') || '';
+          }
+          masterStudent = {
+            id: 'stu_' + cleanMatric.replace(/[^A-Z0-9]/gi, '_').toLowerCase(),
+            matric_no: cleanMatric,
+            surname: (surname || 'Student').toUpperCase(),
+            first_name: (resolvedFirst || '').toUpperCase(),
+            middle_name: (resolvedMiddle || '').toUpperCase(),
+            program: programVal,
+            level: levelVal,
+            email: emailVal,
+            phone: '',
+            search_key: `${surname} ${resolvedFirst} ${resolvedMiddle} ${cleanMatric}`.toLowerCase(),
+            status: 'active',
+            created_at: new Date().toISOString(),
+          };
+          studentsMaster.push(masterStudent);
+          AppStorage.setRawItem(STORAGE_KEYS.STUDENTS_MASTER, studentsMaster);
+        } else {
+          rejectedRows.push({
+            row: rowNum,
+            matric_no: cleanMatric,
+            raw_row: row,
+            reason: 'Matric number does not exist in University Master Student directory.',
+          });
+          return;
+        }
       }
 
       // Check if already enrolled in this course (for append mode)
