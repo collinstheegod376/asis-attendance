@@ -14,20 +14,19 @@ import {
   LineChart,
   Line,
 } from 'recharts';
-import { AppStorage } from '../../lib/storage';
+import { AdminService } from '../../services/adminService';
 import { Course, User, AttendanceRecord, LectureSession, StudentMaster } from '../../types';
+import { formatWATDate, formatWATDateTime } from '../../lib/dateUtils';
 import {
   BarChart3,
   Filter,
-  Calendar,
   Users,
   CheckCircle2,
   Clock,
-  PieChart as PieIcon,
-  TrendingUp,
   Printer,
   X,
   FileText,
+  Loader2,
 } from 'lucide-react';
 import { EmptyState } from '../../components/common/EmptyState';
 
@@ -40,6 +39,8 @@ export const AnalyticsPage: React.FC = () => {
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [sessions, setSessions] = useState<LectureSession[]>([]);
   const [students, setStudents] = useState<StudentMaster[]>([]);
+  const [rosters, setRosters] = useState<any[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
 
   // Filters
   const [selectedCourseId, setSelectedCourseId] = useState<string>('all');
@@ -48,37 +49,68 @@ export const AnalyticsPage: React.FC = () => {
   const [showReportModal, setShowReportModal] = useState<boolean>(false);
 
   useEffect(() => {
-    setCourses(AppStorage.getCourses());
-    const users = AppStorage.getUsers();
-    setLecturers(users.filter(u => u.role === 'lecturer'));
-    setRecords(AppStorage.getAttendanceRecords());
-    setSessions(AppStorage.getSessions());
-    setStudents(AppStorage.getStudentsMaster());
+    let isMounted = true;
+    async function loadData() {
+      setLoading(true);
+      try {
+        const data = await AdminService.getAnalyticsData();
+        if (isMounted) {
+          setCourses(data.courses || []);
+          setLecturers((data.lecturers || []).filter((u: any) => u.role === 'lecturer'));
+          setRecords(data.records || []);
+          setSessions(data.sessions || []);
+          setStudents(data.students || []);
+          setRosters(data.rosters || []);
+        }
+      } catch (err) {
+        console.error('Failed to load analytics data:', err);
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    }
+    loadData();
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
-  // Filter attendance records based on current filters
+  // Filter courses based on selectedCourseId and selectedLecturerId
+  const filteredCourses = courses.filter(c => {
+    if (selectedCourseId !== 'all' && c.id !== selectedCourseId) return false;
+    if (selectedLecturerId !== 'all' && c.lecturer_id !== selectedLecturerId) return false;
+    return true;
+  });
+  const filteredCourseIds = new Set(filteredCourses.map(c => c.id));
+
+  // Filter sessions based on filteredCourseIds and selectedDateRange
+  const now = Date.now();
+  const dateRangeDays = selectedDateRange !== 'all' ? parseInt(selectedDateRange, 10) : null;
+
+  const filteredSessions = sessions.filter(s => {
+    if (!filteredCourseIds.has(s.course_id)) return false;
+    if (dateRangeDays) {
+      const sessionTime = new Date(s.starts_at).getTime();
+      if (now - sessionTime > dateRangeDays * 24 * 60 * 60 * 1000) return false;
+    }
+    return true;
+  });
+  const filteredSessionIds = new Set(filteredSessions.map(s => s.id));
+
+  // Filter attendance records based on filteredCourseIds, filteredSessionIds, and selectedDateRange
   const filteredRecords = records.filter(r => {
-    if (selectedCourseId !== 'all' && r.course_id !== selectedCourseId) return false;
-
-    if (selectedLecturerId !== 'all') {
-      const crs = courses.find(c => c.id === r.course_id);
-      if (crs?.lecturer_id !== selectedLecturerId) return false;
-    }
-
-    if (selectedDateRange !== 'all') {
+    if (!filteredCourseIds.has(r.course_id)) return false;
+    if (r.session_id && !filteredSessionIds.has(r.session_id)) return false;
+    if (dateRangeDays) {
       const recordDate = new Date(r.signed_at).getTime();
-      const now = Date.now();
-      const days = parseInt(selectedDateRange, 10);
-      if (days && now - recordDate > days * 24 * 60 * 60 * 1000) return false;
+      if (now - recordDate > dateRangeDays * 24 * 60 * 60 * 1000) return false;
     }
-
     return true;
   });
 
   const hasData = records.length > 0;
 
   // Chart 1: Attendance by Course
-  const courseChartData = courses.map(c => {
+  const courseChartData = filteredCourses.map(c => {
     const courseRecs = filteredRecords.filter(r => r.course_id === c.id);
     const present = courseRecs.filter(r => r.status === 'present').length;
     const late = courseRecs.filter(r => r.status === 'late').length;
@@ -96,7 +128,7 @@ export const AnalyticsPage: React.FC = () => {
   const levelChartData = levels.map(lvl => {
     const levelRecs = filteredRecords.filter(r => {
       const std = students.find(s => s.id === r.student_id || s.matric_no === r.matric_no);
-      return (std?.level || r.level) === lvl;
+      return String(std?.level || r.level) === lvl;
     });
     const present = levelRecs.filter(r => r.status === 'present').length;
     const late = levelRecs.filter(r => r.status === 'late').length;
@@ -109,15 +141,15 @@ export const AnalyticsPage: React.FC = () => {
   });
 
   // Chart 3: Attendance by Session Timeline
-  const sessionChartData = sessions
-    .filter(s => selectedCourseId === 'all' || s.course_id === selectedCourseId)
+  const sessionChartData = filteredSessions
+    .slice()
     .sort((a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime())
     .slice(-10) // last 10 sessions
     .map(s => {
       const sessionRecs = filteredRecords.filter(r => r.session_id === s.id);
       return {
         title: s.title.length > 15 ? s.title.slice(0, 15) + '...' : s.title,
-        date: new Date(s.starts_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
+        date: formatWATDate(s.starts_at),
         attendees: sessionRecs.length,
       };
     });
@@ -131,29 +163,100 @@ export const AnalyticsPage: React.FC = () => {
   ].filter(d => d.value > 0);
 
   // Chart 5: Student attendance percentage distribution (<50%, 50-75%, >=75%)
+  // Fixes QA-19:
+  // - Filter students to those enrolled in filteredCourses
+  // - Denominator = number of held sessions in filteredCourses (per student's enrolled courses, not global)
+  // - If no sessions held, shows "No sessions held" empty state
   const studentDistribution = () => {
-    if (students.length === 0 || sessions.length === 0) return [];
+    // 1. Identify held sessions per course in filteredCourses
+    const heldSessionsPerCourse = new Map<string, string[]>();
+    filteredSessions.forEach(s => {
+      const isHeld = s.status === 'closed' || s.status === 'active' || s.status === 'expired' || new Date(s.starts_at).getTime() <= now;
+      if (isHeld) {
+        const list = heldSessionsPerCourse.get(s.course_id) || [];
+        list.push(s.id);
+        heldSessionsPerCourse.set(s.course_id, list);
+      }
+    });
+
+    // 2. Identify students enrolled in filteredCourses
+    const studentEnrolledCourses = new Map<string, Set<string>>(); // matric_no -> Set of course_id
+
+    rosters.forEach((rost: any) => {
+      if (filteredCourseIds.has(rost.course_id)) {
+        const matric = (rost.matric_no || '').trim().toUpperCase();
+        if (matric) {
+          if (!studentEnrolledCourses.has(matric)) {
+            studentEnrolledCourses.set(matric, new Set());
+          }
+          studentEnrolledCourses.get(matric)!.add(rost.course_id);
+        }
+      }
+    });
+
+    // Fallback: If no roster loaded, infer enrollment from filtered records
+    if (studentEnrolledCourses.size === 0) {
+      filteredRecords.forEach(r => {
+        const matric = (r.matric_no || '').trim().toUpperCase();
+        if (matric && filteredCourseIds.has(r.course_id)) {
+          if (!studentEnrolledCourses.has(matric)) {
+            studentEnrolledCourses.set(matric, new Set());
+          }
+          studentEnrolledCourses.get(matric)!.add(r.course_id);
+        }
+      });
+    }
+
+    if (studentEnrolledCourses.size === 0) return [];
+
     let below50 = 0;
     let between50and75 = 0;
     let above75 = 0;
+    let evaluatedStudents = 0;
 
-    students.forEach(s => {
-      const attended = filteredRecords.filter(r => r.matric_no === s.matric_no).length;
-      const totalPossible = sessions.length;
-      const pct = totalPossible > 0 ? (attended / totalPossible) * 100 : 0;
+    studentEnrolledCourses.forEach((enrolledCourseIds, matric) => {
+      let totalHeldSessions = 0;
+      const validHeldSessionIds = new Set<string>();
+
+      enrolledCourseIds.forEach(courseId => {
+        const courseSessions = heldSessionsPerCourse.get(courseId) || [];
+        totalHeldSessions += courseSessions.length;
+        courseSessions.forEach(sid => validHeldSessionIds.add(sid));
+      });
+
+      // If denominator is 0, student has had no sessions held yet
+      if (totalHeldSessions === 0) return;
+
+      evaluatedStudents++;
+      const attended = filteredRecords.filter(
+        r => r.matric_no === matric && r.session_id && validHeldSessionIds.has(r.session_id)
+      ).length;
+
+      const pct = (attended / totalHeldSessions) * 100;
       if (pct < 50) below50++;
       else if (pct < 75) between50and75++;
       else above75++;
     });
 
+    if (evaluatedStudents === 0) return [];
+
     return [
-      { range: 'Below 50% (< 50%)', count: below50 },
-      { range: 'Satisfactory (50% - 74%)', count: between50and75 },
-      { range: 'High (75% - 100%)', count: above75 },
+      { range: 'Below 50% (< 50%)', count: below50, total: evaluatedStudents },
+      { range: 'Satisfactory (50% - 74%)', count: between50and75, total: evaluatedStudents },
+      { range: 'High (75% - 100%)', count: above75, total: evaluatedStudents },
     ];
   };
 
   const distData = studentDistribution();
+
+  if (loading) {
+    return (
+      <div className="py-24 flex flex-col items-center justify-center gap-3 text-slate-500">
+        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+        <p className="text-sm font-medium">Loading institutional analytics...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
@@ -257,8 +360,8 @@ export const AnalyticsPage: React.FC = () => {
 
             <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
               <span className="text-xs font-semibold text-slate-500 uppercase">Lectures Monitored</span>
-              <p className="text-3xl font-extrabold text-emerald-700 mt-2">{sessions.length}</p>
-              <p className="text-xs text-slate-500 mt-1">Active / closed classroom sessions</p>
+              <p className="text-3xl font-extrabold text-emerald-700 mt-2">{filteredSessions.length}</p>
+              <p className="text-xs text-slate-500 mt-1">Matching selected filters</p>
             </div>
           </div>
 
@@ -386,13 +489,17 @@ export const AnalyticsPage: React.FC = () => {
           </div>
 
           {/* Row 3: Student Attendance Distribution */}
-          {distData.length > 0 && (
-            <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
-              <h2 className="text-base font-bold text-slate-900 mb-1">Student Attendance % Distribution</h2>
-              <p className="text-xs text-slate-500 mb-4">
-                Proportion of student body meeting institutional examination eligibility threshold (75% minimum)
-              </p>
+          <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
+            <h2 className="text-base font-bold text-slate-900 mb-1">Student Attendance % Distribution</h2>
+            <p className="text-xs text-slate-500 mb-4">
+              Proportion of student body meeting institutional examination eligibility threshold (75% minimum)
+            </p>
 
+            {distData.length === 0 ? (
+              <div className="py-8 text-center text-slate-500 text-sm italic border border-dashed border-slate-200 rounded-xl">
+                No sessions held for the selected course and date criteria.
+              </div>
+            ) : (
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {distData.map((d, i) => (
                   <div key={d.range} className="p-4 rounded-xl border border-slate-200 bg-slate-50/50">
@@ -405,13 +512,13 @@ export const AnalyticsPage: React.FC = () => {
                     </div>
                     <p className="text-2xl font-extrabold text-slate-900 mt-2">{d.count} Students</p>
                     <p className="text-[11px] text-slate-500 mt-0.5">
-                      {students.length ? Math.round((d.count / students.length) * 100) : 0}% of cohort
+                      {d.total ? Math.round((d.count / d.total) * 100) : 0}% of evaluated cohort
                     </p>
                   </div>
                 ))}
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </>
       )}
 
@@ -428,53 +535,38 @@ export const AnalyticsPage: React.FC = () => {
               <div className="flex items-center gap-3">
                 <button
                   onClick={() => window.print()}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-bold text-white transition shadow-2xs"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-bold text-white transition shadow-2xs cursor-pointer"
                 >
                   <Printer className="w-3.5 h-3.5" />
                   <span>Print / Save PDF</span>
                 </button>
                 <button
                   onClick={() => setShowReportModal(false)}
-                  className="text-slate-400 hover:text-white"
+                  className="text-slate-400 hover:text-white cursor-pointer"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
             </div>
 
-            {/* Printable Report Content */}
-            <div className="p-8 sm:p-10 space-y-6 bg-white text-slate-900">
-              {/* Official Letterhead with ADUN Logo */}
-              <div className="flex items-center justify-between pb-6 border-b-2 border-blue-950">
-                <div className="flex items-center gap-5">
-                  <img
-                    src="/adun-logo.png"
-                    alt="Admiralty University of Nigeria"
-                    className="w-20 h-20 object-contain drop-shadow"
-                  />
-                  <div>
-                    <h2 className="text-xl sm:text-2xl font-black text-blue-950 tracking-tight leading-none uppercase">
-                      Admiralty University of Nigeria
-                    </h2>
-                    <p className="text-xs text-slate-600 font-semibold tracking-wide uppercase mt-1">
-                      Directorate of Academic Affairs &bull; Directorate of ICT
-                    </p>
-                    <p className="text-[11px] text-slate-500 font-medium">
-                      Ibusa / Ogwashi-Uku Campus, Delta State, Nigeria
-                    </p>
-                  </div>
+            {/* Printable Document Body */}
+            <div className="p-8 sm:p-12 space-y-6 print:p-0 print:m-0">
+              {/* Official Crest Header */}
+              <div className="flex items-center justify-between border-b-2 border-blue-900 pb-4">
+                <div>
+                  <h2 className="text-xl font-black text-blue-950 tracking-tight">
+                    ADMIRALTY UNIVERSITY OF NIGERIA
+                  </h2>
+                  <p className="text-xs font-semibold text-slate-600">
+                    Office of Academic Affairs &amp; Directorate of ICT
+                  </p>
+                  <p className="text-[11px] text-slate-500">Ibusa / Asaba Campus, Delta State, Nigeria</p>
                 </div>
-
-                <div className="text-right text-xs space-y-0.5">
-                  <p className="font-mono font-bold text-slate-900 text-[11px]">
-                    DOC ID: ADUN/REP/{Date.now().toString().slice(-6)}
-                  </p>
-                  <p className="text-slate-500">
-                    Generated: {new Date().toLocaleDateString('en-GB', { timeZone: 'Africa/Lagos' })}
-                  </p>
-                  <p className="text-slate-500 font-mono text-[10px]">
-                    WAT Time: {new Date().toLocaleTimeString('en-GB', { timeZone: 'Africa/Lagos' })} WAT
-                  </p>
+                <div className="text-right text-xs">
+                  <span className="font-mono px-2.5 py-1 bg-slate-100 rounded-md font-bold text-slate-800">
+                    STATUS: OFFICIAL
+                  </span>
+                  <p className="text-[10px] text-slate-500 mt-1">Generated: {formatWATDateTime(new Date())}</p>
                 </div>
               </div>
 
@@ -496,11 +588,11 @@ export const AnalyticsPage: React.FC = () => {
                 </div>
                 <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
                   <span className="text-[11px] text-slate-500 font-semibold uppercase">Active Courses</span>
-                  <p className="text-xl font-black text-blue-900 mt-1">{courses.length}</p>
+                  <p className="text-xl font-black text-blue-900 mt-1">{filteredCourses.length}</p>
                 </div>
                 <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
-                  <span className="text-[11px] text-slate-500 font-semibold uppercase">Lectures Held</span>
-                  <p className="text-xl font-black text-indigo-900 mt-1">{sessions.length}</p>
+                  <span className="text-[11px] text-slate-500 font-semibold uppercase">Lectures Monitored</span>
+                  <p className="text-xl font-black text-indigo-900 mt-1">{filteredSessions.length}</p>
                 </div>
                 <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
                   <span className="text-[11px] text-slate-500 font-semibold uppercase">Total Check-Ins</span>
@@ -525,14 +617,14 @@ export const AnalyticsPage: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {courses.length === 0 ? (
+                      {filteredCourses.length === 0 ? (
                         <tr>
                           <td colSpan={5} className="py-4 text-center text-slate-400 italic">
-                            No courses currently active in institutional repository.
+                            No courses matching selected filters.
                           </td>
                         </tr>
                       ) : (
-                        courses.map(c => {
+                        filteredCourses.map(c => {
                           const crsRecs = filteredRecords.filter(r => r.course_id === c.id);
                           const pCount = crsRecs.filter(r => r.status === 'present').length;
                           const lCount = crsRecs.filter(r => r.status === 'late').length;

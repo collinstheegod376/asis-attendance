@@ -14,6 +14,7 @@ import {
   RotateCcw,
   ShieldCheck,
   X,
+  AlertCircle,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { LecturerService, StudentAttendanceSummary } from '../../services/lecturerService';
@@ -27,6 +28,7 @@ interface CourseStudentsTabProps {
 export const CourseStudentsTab: React.FC<CourseStudentsTabProps> = ({ course }) => {
   const { user } = useAuth();
   const [summaries, setSummaries] = useState<StudentAttendanceSummary[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterThreshold, setFilterThreshold] = useState<'all' | 'good' | 'at_risk' | 'critical'>('all');
 
@@ -37,32 +39,38 @@ export const CourseStudentsTab: React.FC<CourseStudentsTabProps> = ({ course }) 
   const [resetSuccessMsg, setResetSuccessMsg] = useState('');
   const [resetErrorMsg, setResetErrorMsg] = useState('');
 
-  const loadData = () => {
-    const list = LecturerService.getCourseAttendanceSummary(course.id);
-    setSummaries(list);
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      const list = await LecturerService.getCourseAttendanceSummary(course.id);
+      setSummaries(list);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
     loadData();
   }, [course.id]);
 
-  const handleResetSubmit = (e: React.FormEvent) => {
+  const handleResetSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!resetModalStudent || !user) return;
     setResetLoading(true);
     setResetSuccessMsg('');
     setResetErrorMsg('');
 
-    const res = LecturerService.emergencyResetDevice(
+    const res = await LecturerService.emergencyResetDevice(
       resetModalStudent.student_id,
       course.id,
-      resetReason.trim(),
-      { id: user.id, name: user.name }
+      resetReason.trim()
     );
     setResetLoading(false);
 
     if (res.success) {
-      setResetSuccessMsg(`Device lock reset successfully for ${resetModalStudent.matric_no}. Action recorded to device_events and audit_logs.`);
+      setResetSuccessMsg(
+        `Device lock reset successfully for ${resetModalStudent.matric_no}. Action recorded to device_events and audit_logs.`
+      );
       setTimeout(() => {
         setResetModalStudent(null);
         setResetSuccessMsg('');
@@ -95,76 +103,51 @@ export const CourseStudentsTab: React.FC<CourseStudentsTabProps> = ({ course }) 
             <span>Student Attendance Performance</span>
           </h3>
           <p className="text-xs text-slate-500 mt-0.5">
-            Real-time attendance percentage based on sessions held. Admiralty University requires $\ge 75\%$ attendance for exam eligibility.
+            Real-time attendance percentage based on sessions held. Admiralty University requires &ge; 75% attendance for exam eligibility.
           </p>
         </div>
 
-        {/* Quick Filter Badges */}
-        <div className="flex items-center gap-2 text-xs font-semibold self-start sm:self-auto">
-          <button
-            onClick={() => setFilterThreshold('all')}
-            className={`px-3 py-1.5 rounded-xl border transition ${
-              filterThreshold === 'all'
-                ? 'bg-blue-50 text-blue-800 border-blue-200 font-bold'
-                : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-            }`}
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Search */}
+          <div className="relative">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Search student or matric..."
+              className="pl-9 pr-3 py-1.5 text-xs rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-600 w-48 sm:w-60"
+            />
+          </div>
+
+          {/* Filter Threshold */}
+          <select
+            value={filterThreshold}
+            onChange={e => setFilterThreshold(e.target.value as any)}
+            className="py-1.5 px-3 text-xs rounded-xl border border-slate-200 bg-slate-50 text-slate-700 font-medium focus:outline-hidden focus:ring-2 focus:ring-blue-600"
           >
-            All ({summaries.length})
-          </button>
-          <button
-            onClick={() => setFilterThreshold('good')}
-            className={`px-3 py-1.5 rounded-xl border transition ${
-              filterThreshold === 'good'
-                ? 'bg-emerald-50 text-emerald-800 border-emerald-200 font-bold'
-                : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-            }`}
-          >
-            &ge; 75% Good ({summaries.filter(s => s.attendance_percentage >= 75).length})
-          </button>
-          <button
-            onClick={() => setFilterThreshold('critical')}
-            className={`px-3 py-1.5 rounded-xl border transition ${
-              filterThreshold === 'critical'
-                ? 'bg-rose-50 text-rose-800 border-rose-200 font-bold'
-                : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-            }`}
-          >
-            &lt; 60% Critical ({summaries.filter(s => s.attendance_percentage < 60).length})
-          </button>
+            <option value="all">All Attendance Rates</option>
+            <option value="good">Good Standing (&ge; 75%)</option>
+            <option value="at_risk">At Risk (60% - 74%)</option>
+            <option value="critical">Debarred / Low (&lt; 60%)</option>
+          </select>
         </div>
       </div>
 
-      {/* Student List Table */}
-      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
-        {/* Search */}
-        <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between gap-4">
-          <div className="relative w-full max-w-sm">
-            <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
-            <input
-              type="text"
-              placeholder="Search by matric no or name..."
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-3 py-1.5 rounded-xl border border-slate-200 text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-600"
-            />
-          </div>
-
-          <span className="text-xs text-slate-500 font-medium">
-            Showing {filteredSummaries.length} of {summaries.length} students
-          </span>
-        </div>
-
-        {summaries.length === 0 ? (
-          <div className="p-8">
-            <EmptyState
-              icon={Users}
-              title="No Enrolled Students"
-              description="No students are enrolled in this course roster. Upload a roster spreadsheet in the 'Course Roster' tab to begin tracking student attendance."
-            />
+      {/* Students Table */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+        {loading ? (
+          <div className="p-12 text-center text-slate-500">
+            <div className="w-8 h-8 border-3 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+            <p className="text-xs">Loading student records...</p>
           </div>
         ) : filteredSummaries.length === 0 ? (
-          <div className="p-8 text-center text-slate-400 text-xs">
-            No students found matching your criteria.
+          <div className="p-10">
+            <EmptyState
+              icon={Users}
+              title="No Enrolled Students Match"
+              description="Upload your course roster or adjust filter criteria above to review student attendance status."
+            />
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -173,85 +156,90 @@ export const CourseStudentsTab: React.FC<CourseStudentsTabProps> = ({ course }) 
                 <tr>
                   <th className="px-5 py-3.5">Matric Number</th>
                   <th className="px-5 py-3.5">Student Name</th>
-                  <th className="px-5 py-3.5">Program & Level</th>
-                  <th className="px-5 py-3.5">Sessions Attended</th>
+                  <th className="px-5 py-3.5">Program / Level</th>
+                  <th className="px-5 py-3.5 text-center">Attended / Total</th>
                   <th className="px-5 py-3.5">Attendance Rate</th>
-                  <th className="px-5 py-3.5">Last Signed (WAT)</th>
+                  <th className="px-5 py-3.5">Last Signed</th>
                   <th className="px-5 py-3.5 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredSummaries.map(item => {
-                  const pct = item.attendance_percentage;
-                  const isGood = pct >= 75;
-                  const isAtRisk = pct >= 60 && pct < 75;
+                {filteredSummaries.map(s => {
+                  const isGood = s.attendance_percentage >= 75;
+                  const isAtRisk = s.attendance_percentage >= 60 && s.attendance_percentage < 75;
 
                   return (
-                    <tr key={item.student_id} className="hover:bg-blue-50/30 transition">
-                      <td className="px-5 py-4 font-mono font-bold text-blue-900">
-                        {item.matric_no}
+                    <tr key={s.student_id} className="hover:bg-blue-50/30 transition">
+                      <td className="px-5 py-3.5 font-mono font-bold text-blue-900">
+                        {s.matric_no}
                       </td>
-                      <td className="px-5 py-4 font-bold text-slate-800">
-                        {item.student_name}
+                      <td className="px-5 py-3.5 font-bold text-slate-800">
+                        {s.student_name}
                       </td>
-                      <td className="px-5 py-4 text-slate-600">
-                        {item.program} <span className="text-slate-400">({item.level}L)</span>
+                      <td className="px-5 py-3.5 text-slate-600">
+                        {s.program} <span className="text-slate-400 font-mono">({s.level}L)</span>
                       </td>
-                      <td className="px-5 py-4 font-semibold text-slate-800">
-                        {item.attended_sessions} / {item.total_sessions}
+                      <td className="px-5 py-3.5 text-center font-mono font-semibold text-slate-700">
+                        {s.attended_sessions} / {s.total_sessions}
                       </td>
-                      <td className="px-5 py-4">
+                      <td className="px-5 py-3.5">
                         <div className="flex items-center gap-2">
-                          <div className="w-20 bg-slate-100 h-2 rounded-full overflow-hidden shrink-0">
+                          <div className="w-16 bg-slate-100 h-2 rounded-full overflow-hidden">
                             <div
                               className={`h-full rounded-full ${
                                 isGood ? 'bg-emerald-500' : isAtRisk ? 'bg-amber-500' : 'bg-rose-500'
                               }`}
-                              style={{ width: `${pct}%` }}
+                              style={{ width: `${s.attendance_percentage}%` }}
                             />
                           </div>
-                          <span className={`font-mono font-bold text-xs ${
-                            isGood ? 'text-emerald-700' : isAtRisk ? 'text-amber-700' : 'text-rose-700'
-                          }`}>
-                            {pct}%
+                          <span
+                            className={`font-mono text-xs font-bold ${
+                              isGood
+                                ? 'text-emerald-700'
+                                : isAtRisk
+                                ? 'text-amber-700'
+                                : 'text-rose-700'
+                            }`}
+                          >
+                            {s.attendance_percentage}%
                           </span>
                         </div>
                       </td>
-                      <td className="px-5 py-4 text-slate-500 text-xs">
-                        {item.last_signed_date ? (
-                          <div className="flex flex-col">
-                            <span className="font-medium text-slate-700">{item.last_signed_date}</span>
-                            <span className="text-[11px] text-slate-400">{item.last_signed_time} &bull; {item.last_status?.toUpperCase()}</span>
+                      <td className="px-5 py-3.5 text-slate-500 whitespace-nowrap">
+                        {s.last_signed_date ? (
+                          <div className="text-xs">
+                            <span className="font-semibold text-slate-700">{s.last_signed_date}</span>
+                            <span className="text-[11px] text-slate-400 block">{s.last_signed_time}</span>
                           </div>
                         ) : (
-                          <span className="text-slate-400 italic">Never signed</span>
+                          <span className="text-slate-400 text-xs italic">Never signed</span>
                         )}
                       </td>
-                      <td className="px-5 py-4 text-right">
-                        <div className="inline-flex items-center justify-end gap-2">
+                      <td className="px-5 py-3.5 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          {/* Calendar & Forensic View */}
+                          <Link
+                            to={`/lecturer/courses/${course.id}/students/${s.student_id}/calendar`}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold transition"
+                            title="Open detailed attendance calendar and selfie evidence"
+                          >
+                            <Calendar className="w-3.5 h-3.5 text-blue-600" />
+                            <span>Ledger</span>
+                          </Link>
+
+                          {/* Emergency Device Reset Button */}
                           <button
                             onClick={() => {
-                              setResetSuccessMsg('');
-                              setResetErrorMsg('');
+                              setResetModalStudent(s);
                               setResetReason('Student verified with physical ID during lecture');
-                              setResetModalStudent(item);
+                              setResetErrorMsg('');
+                              setResetSuccessMsg('');
                             }}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 font-bold text-xs transition"
-                            title="Emergency in-class device unlock for this student"
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-amber-600 hover:bg-amber-50 transition cursor-pointer"
+                            title="Reset device lock for this student"
                           >
-                            <Smartphone className="w-3.5 h-3.5 text-amber-700" />
-                            <span className="hidden sm:inline">Reset Device</span>
+                            <RotateCcw className="w-4 h-4" />
                           </button>
-
-                          <Link
-                            to={`/lecturer/courses/${course.id}/students/${item.student_id}/calendar`}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-800 font-bold text-xs transition"
-                            title="View student interactive attendance calendar and biometric details"
-                          >
-                            <Calendar className="w-3.5 h-3.5 text-blue-700" />
-                            <span>Calendar</span>
-                            <ChevronRight className="w-3 h-3 text-blue-600" />
-                          </Link>
                         </div>
                       </td>
                     </tr>
@@ -266,114 +254,70 @@ export const CourseStudentsTab: React.FC<CourseStudentsTabProps> = ({ course }) 
       {/* Emergency Device Reset Modal */}
       {resetModalStudent && (
         <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl border border-slate-100 relative">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-8 shadow-2xl border border-slate-100 relative">
             <button
               onClick={() => setResetModalStudent(null)}
-              className="absolute right-6 top-6 p-1.5 rounded-full text-slate-400 hover:bg-slate-100 transition"
+              className="absolute top-5 right-5 text-slate-400 hover:text-slate-600 p-1 rounded-lg"
             >
               <X className="w-5 h-5" />
             </button>
 
-            <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-700 flex items-center justify-center mb-4 border border-amber-200">
-              <Smartphone className="w-6 h-6" />
+            <div className="w-12 h-12 bg-amber-50 text-amber-700 rounded-2xl flex items-center justify-center mb-4 border border-amber-200">
+              <RotateCcw className="w-6 h-6" />
             </div>
 
-            <h3 className="text-xl font-bold text-slate-900 tracking-tight">
-              Emergency Device Reset
+            <h3 className="text-lg font-bold text-slate-900 mb-1">
+              Reset Device Lock
             </h3>
-            <p className="text-xs text-slate-500 mt-1 mb-4 leading-relaxed">
-              Initiate an emergency device unlock for <strong className="text-slate-800">{resetModalStudent.student_name}</strong> (<span className="font-mono text-blue-900 font-bold">{resetModalStudent.matric_no}</span>) enrolled in <span className="font-bold text-blue-900">{course.code}</span>.
+            <p className="text-xs text-slate-500 mb-4">
+              Authorize hardware device reset for student{' '}
+              <span className="font-bold text-blue-900">{resetModalStudent.student_name}</span> (
+              <span className="font-mono font-bold">{resetModalStudent.matric_no}</span>). The student will be allowed to bind a new device on their next check-in.
             </p>
 
-            <div className="p-3 mb-4 rounded-xl bg-blue-50/80 border border-blue-200 text-blue-900 text-xs">
-              <p className="font-bold mb-0.5 flex items-center gap-1.5">
-                <ShieldCheck className="w-3.5 h-3.5 text-blue-700" />
-                <span>Strict Hardware Binding Protocol (Option 2)</span>
-              </p>
-              <p className="text-blue-800 text-[11px]">
-                Resetting allows the student to immediately register attendance on a new verified handset. Per institutional anti-proxy regulations, a mandatory justification is required and will be permanently logged to <code className="bg-blue-100 px-1 py-0.5 rounded font-mono font-bold">device_events</code> and <code className="bg-blue-100 px-1 py-0.5 rounded font-mono font-bold">audit_logs</code>.
-              </p>
-            </div>
-
-            {resetSuccessMsg && (
-              <div className="p-3.5 mb-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span className="font-semibold">{resetSuccessMsg}</span>
+            {resetErrorMsg && (
+              <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{resetErrorMsg}</span>
               </div>
             )}
 
-            {resetErrorMsg && (
-              <div className="p-3.5 mb-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-xs flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-                <span className="font-semibold">{resetErrorMsg}</span>
+            {resetSuccessMsg && (
+              <div className="mb-4 p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-medium flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+                <span>{resetSuccessMsg}</span>
               </div>
             )}
 
             <form onSubmit={handleResetSubmit} className="space-y-4">
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Mandatory Verification Reason <span className="text-rose-600">*</span>
+                  Audit &amp; Forensic Reason (Minimum 10 characters) <span className="text-rose-500">*</span>
                 </label>
                 <textarea
-                  required
                   rows={3}
+                  required
                   value={resetReason}
                   onChange={e => setResetReason(e.target.value)}
-                  placeholder="e.g. Student verified with physical ID during lecture..."
-                  className="w-full p-3 rounded-xl border border-slate-300 text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+                  placeholder="Explain why this student device lock is being cleared..."
+                  className="w-full p-3 text-xs rounded-xl border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
                 />
               </div>
 
-              <div>
-                <span className="text-[10px] font-bold uppercase text-slate-400 block mb-1.5">
-                  Quick Justification Presets:
-                </span>
-                <div className="flex flex-wrap gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setResetReason('Student verified with physical ID during lecture')}
-                    className="text-[11px] px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium transition"
-                  >
-                    Verified with physical ID
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setResetReason('Student phone battery depleted; switching to verified backup handset')}
-                    className="text-[11px] px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium transition"
-                  >
-                    Battery depleted / backup phone
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setResetReason('Student browser cache cleared / hardware changed')}
-                    className="text-[11px] px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium transition"
-                  >
-                    Storage cleared
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+              <div className="flex items-center justify-end gap-2.5 pt-2">
                 <button
                   type="button"
                   onClick={() => setResetModalStudent(null)}
-                  className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-xl transition"
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={resetLoading || !resetReason.trim()}
-                  className="px-5 py-2.5 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-xl transition shadow-xs disabled:opacity-50 flex items-center gap-1.5"
+                  disabled={resetLoading || resetReason.trim().length < 10}
+                  className="px-4 py-2 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 active:bg-amber-800 rounded-xl transition shadow-xs disabled:opacity-50"
                 >
-                  {resetLoading ? (
-                    <span>Processing Reset...</span>
-                  ) : (
-                    <>
-                      <RotateCcw className="w-4 h-4" />
-                      <span>Confirm & Reset Device Lock</span>
-                    </>
-                  )}
+                  {resetLoading ? 'Resetting...' : 'Authorize Reset'}
                 </button>
               </div>
             </form>

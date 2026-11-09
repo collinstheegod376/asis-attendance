@@ -16,10 +16,10 @@ import {
   FolderArchive,
   ChevronRight,
   ExternalLink,
+  Loader2,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { LecturerService } from '../../services/lecturerService';
-import { AppStorage } from '../../lib/storage';
 import { Course, LectureSession } from '../../types';
 import { EmptyState } from '../../components/common/EmptyState';
 
@@ -33,6 +33,7 @@ export const LecturerDashboardPage: React.FC = () => {
   const [activeCount, setActiveCount] = useState(0);
   const [maxQuota, setMaxQuota] = useState(9);
   const [canCreateCourse, setCanCreateCourse] = useState(true);
+  const [loading, setLoading] = useState(true);
 
   // Modal state
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -45,31 +46,32 @@ export const LecturerDashboardPage: React.FC = () => {
   // Tab for active vs archived
   const [courseViewTab, setCourseViewTab] = useState<'active' | 'archived'>('active');
 
-  const loadData = () => {
+  const loadData = async () => {
     if (!user) return;
-    const lecturerId = user.id;
+    setLoading(true);
+    try {
+      const quotaInfo = await LecturerService.getLecturerCourses(user.id);
+      setActiveCourses(quotaInfo.activeCourses);
+      setArchivedCourses(quotaInfo.archivedCourses);
+      setActiveCount(quotaInfo.activeCount);
+      setMaxQuota(quotaInfo.maxQuota);
+      setCanCreateCourse(quotaInfo.canCreateCourse);
 
-    const quotaInfo = LecturerService.getLecturerCourses(lecturerId);
-    setActiveCourses(quotaInfo.activeCourses);
-    setArchivedCourses(quotaInfo.archivedCourses);
-    setActiveCount(quotaInfo.activeCount);
-    setMaxQuota(quotaInfo.maxQuota);
-    setCanCreateCourse(quotaInfo.canCreateCourse);
-
-    // Get recent sessions across this lecturer's courses
-    const allSessions = AppStorage.getSessions().filter(s => {
-      const crs = quotaInfo.activeCourses.concat(quotaInfo.archivedCourses).find(c => c.id === s.course_id);
-      return crs !== undefined || s.created_by === lecturerId;
-    });
-
-    setRecentSessions(allSessions.slice(0, 6));
+      // Get recent sessions across this lecturer's courses direct from LecturerService
+      const recent = await LecturerService.getLecturerRecentSessions(user.id, 6);
+      setRecentSessions(recent);
+    } catch (err) {
+      console.error('Failed to load lecturer dashboard data:', err);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
     loadData();
   }, [user]);
 
-  const handleCreateCourse = (e: React.FormEvent) => {
+  const handleCreateCourse = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
     setFormError('');
@@ -84,7 +86,7 @@ export const LecturerDashboardPage: React.FC = () => {
     }
 
     setIsSubmitting(true);
-    const res = LecturerService.createCourse(
+    const res = await LecturerService.createCourse(
       user.id,
       {
         code: code.trim(),
@@ -102,27 +104,27 @@ export const LecturerDashboardPage: React.FC = () => {
       setTitle('');
       setDepartment('');
       setCreateModalOpen(false);
-      loadData();
+      await loadData();
     }
   };
 
-  const handleArchiveCourse = (courseId: string) => {
+  const handleArchiveCourse = async (courseId: string) => {
     if (!user) return;
     if (window.confirm('Are you sure you want to archive this course? It will be deactivated and will no longer count against your 9-course limit.')) {
-      const res = LecturerService.archiveCourse(courseId, { id: user.id, name: user.name });
+      const res = await LecturerService.archiveCourse(courseId, { id: user.id, name: user.name });
       if (res.success) {
-        loadData();
+        await loadData();
       } else {
         alert(res.error || 'Could not archive course.');
       }
     }
   };
 
-  const handleUnarchiveCourse = (courseId: string) => {
+  const handleUnarchiveCourse = async (courseId: string) => {
     if (!user) return;
-    const res = LecturerService.unarchiveCourse(courseId, user.id, { id: user.id, name: user.name });
+    const res = await LecturerService.unarchiveCourse(courseId, user.id, { id: user.id, name: user.name });
     if (res.success) {
-      loadData();
+      await loadData();
     } else {
       alert(res.error || 'Could not unarchive course.');
     }

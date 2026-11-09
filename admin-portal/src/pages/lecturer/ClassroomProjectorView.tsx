@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import QRCode from 'qrcode';
 import {
@@ -19,14 +19,18 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { LecturerService } from '../../services/lecturerService';
-import { AppStorage } from '../../lib/storage';
 import { LectureSession, AttendanceRecord } from '../../types';
+import { useAuth } from '../../context/AuthContext';
+import { formatWATTime } from '../../lib/dateUtils';
+import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 
 export const ClassroomProjectorView: React.FC = () => {
   const { sessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
+  const { user } = useAuth();
 
   const [session, setSession] = useState<LectureSession | null>(null);
+  const [loading, setLoading] = useState(true);
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [attendees, setAttendees] = useState<AttendanceRecord[]>([]);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -40,7 +44,7 @@ export const ClassroomProjectorView: React.FC = () => {
   const audioContextRef = useRef<AudioContext | null>(null);
 
   // Play pleasant check-in chime using Web Audio API
-  const playCheckinChime = () => {
+  const playCheckinChime = useCallback(() => {
     if (!soundEnabled) return;
     try {
       if (!audioContextRef.current) {
@@ -70,30 +74,44 @@ export const ClassroomProjectorView: React.FC = () => {
     } catch {
       // Audio autoplay may be constrained until user interaction
     }
-  };
+  }, [soundEnabled]);
 
-  // Load session data
-  const loadData = () => {
+  // Load session metadata ONCE (and verify ownership)
+  useEffect(() => {
     if (!sessionId) return;
-    const s = LecturerService.getSessionById(sessionId);
-    if (!s) {
-      return;
-    }
-    setSession(s);
+    let isMounted = true;
 
-    const records = LecturerService.getSessionAttendanceRecords(sessionId);
-    // If attendee count increased, chime
-    if (records.length > previousCountRef.current && previousCountRef.current !== 0) {
-      playCheckinChime();
-    }
-    previousCountRef.current = records.length;
-    setAttendees(records);
+    LecturerService.getSessionById(sessionId).then(s => {
+      if (!isMounted) return;
+      if (!s) {
+        setLoading(false);
+        return;
+      }
 
-    // Compute session join link (Static QR does not rotate)
-    const host = window.location.origin.includes('localhost') 
-      ? window.location.origin.replace(':5174', ':5173') // Pointing to student PWA default port
+      // Fix SEC-17: Course ownership verification
+      if (user && user.role === 'lecturer' && s.lecturer_id && s.lecturer_id !== user.id) {
+        alert('You do not have access to this lecture session.');
+        navigate('/lecturer/dashboard', { replace: true });
+        return;
+      }
+
+      setSession(s);
+      setLoading(false);
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [sessionId, user, navigate]);
+
+  // Fix QA-17: Generate QR ONLY when the token changes, NEVER in a 2.5s poll!
+  useEffect(() => {
+    if (!session) return;
+
+    const host = window.location.origin.includes('localhost')
+      ? window.location.origin.replace(':5174', ':5173')
       : window.location.origin;
-    const token = s.raw_token || s.id;
+    const token = session.raw_token || session.id;
     const joinUrl = `${host}/join/${token}`;
 
     QRCode.toDataURL(joinUrl, {
@@ -101,43 +119,81 @@ export const ClassroomProjectorView: React.FC = () => {
       margin: 2,
       scale: 12,
       color: {
-        dark: '#0f172a', // Deep Navy
-        light: '#ffffff', // Pure White
+        dark: '#0f172a',
+        light: '#ffffff',
       },
     })
       .then(url => setQrDataUrl(url))
       .catch(err => console.error('Failed to generate QR code:', err));
-  };
+  }, [session?.raw_token, session?.id]);
 
+  // Poll only attendance records every 5000ms (5s) or subscribe via Supabase Realtime
   useEffect(() => {
-    loadData();
-    const interval = setInterval(loadData, 2500); // Polling for live attendance records
-    return () => clearInterval(interval);
-  }, [sessionId, soundEnabled]);
+    if (!sessionId) return;
+    let isMounted = true;
 
-  // Clock & Countdown timer
+    const fetchAttendees = async () => {
+      const records = await LecturerService.getSessionAttendanceRecords(sessionId);
+      if (!isMounted) return;
+
+      if (records.length > previousCountRef.current && previousCountRef.current !== 0) {
+        playCheckinChime();
+      }
+      previousCountRef.current = records.length;
+      setAttendees(records);
+    };
+
+    fetchAttendees();
+    const interval = setInterval(fetchAttendees, 5000);
+
+    // Lightweight Supabase Realtime channel for instant check-in updates
+    let channel: any = null;
+    if (isSupabaseConfigured && supabase) {
+      try {
+        channel = supabase
+          .channel(`projector:${sessionId}`)
+          .on(
+            'postgres_changes',
+            {
+              event: 'INSERT',
+              schema: 'public',
+              table: 'attendance_records',
+              filter: `session_id=eq.${sessionId}`,
+            },
+            () => {
+              fetchAttendees();
+            }
+          )
+          .subscribe();
+      } catch (e) {
+        console.warn('Realtime subscription warning:', e);
+      }
+    }
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+      if (channel && supabase) {
+        supabase.removeChannel(channel);
+      }
+    };
+  }, [sessionId, playCheckinChime]);
+
+  // Lagos WAT Clock & Countdown timer
   useEffect(() => {
     const updateTime = () => {
-      // Lagos time clock
       try {
-        const now = new Date();
-        const lagosStr = now.toLocaleTimeString('en-GB', {
-          timeZone: 'Africa/Lagos',
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-          hour12: false,
-        });
-        setLagosClock(lagosStr);
+        setLagosClock(formatWATTime(new Date()));
 
         if (!session) return;
 
         if (session.status === 'closed' || session.status === 'revoked') {
           setSessionState('closed');
-          setTimeRemaining('SESSION CLOSED');
+          setTimeRemaining(session.status === 'revoked' ? 'SESSION REVOKED' : 'SESSION CLOSED');
           return;
         }
 
+        const now = new Date();
         const nowMs = now.getTime();
         const startMs = new Date(session.starts_at).getTime();
         const expiresMs = new Date(session.expires_at).getTime();
@@ -159,9 +215,7 @@ export const ClassroomProjectorView: React.FC = () => {
           const secs = String(diffSec % 60).padStart(2, '0');
           setTimeRemaining(`${hrs}:${mins}:${secs}`);
         }
-      } catch {
-        // Fallback
-      }
+      } catch {}
     };
 
     updateTime();
@@ -190,7 +244,7 @@ export const ClassroomProjectorView: React.FC = () => {
 
   const handleCopyLink = () => {
     if (!session) return;
-    const host = window.location.origin.includes('localhost') 
+    const host = window.location.origin.includes('localhost')
       ? window.location.origin.replace(':5174', ':5173')
       : window.location.origin;
     const token = session.raw_token || session.id;
@@ -200,18 +254,31 @@ export const ClassroomProjectorView: React.FC = () => {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleCloseSession = () => {
-    if (!session) return;
-    if (window.confirm('Are you sure you want to end and close this lecture session early? Students will no longer be able to scan or submit attendance.')) {
-      const res = LecturerService.closeLectureSession(session.id, {
-        id: session.lecturer_id || 'lecturer',
-        name: session.lecturer_name || 'Course Lecturer',
+  const handleCloseSession = async () => {
+    if (!session || !user) return;
+    if (
+      window.confirm(
+        'Are you sure you want to end and close this lecture session early? Students will no longer be able to scan or submit attendance.'
+      )
+    ) {
+      const res = await LecturerService.closeLectureSession(session.id, {
+        id: user.id,
+        name: user.name,
       });
       if (res.success) {
-        loadData();
+        setSession(prev => (prev ? { ...prev, status: 'closed' } : null));
       }
     }
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white text-center">
+        <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
+        <p className="text-sm">Initializing Classroom Projector View...</p>
+      </div>
+    );
+  }
 
   if (!session) {
     return (
@@ -223,7 +290,7 @@ export const ClassroomProjectorView: React.FC = () => {
         </p>
         <button
           onClick={() => navigate('/lecturer/dashboard')}
-          className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition"
+          className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition cursor-pointer"
         >
           Return to Dashboard
         </button>
@@ -231,7 +298,7 @@ export const ClassroomProjectorView: React.FC = () => {
     );
   }
 
-  const joinHost = window.location.origin.includes('localhost') 
+  const joinHost = window.location.origin.includes('localhost')
     ? window.location.origin.replace(':5174', ':5173')
     : window.location.origin;
   const token = session.raw_token || session.id;
@@ -251,7 +318,11 @@ export const ClassroomProjectorView: React.FC = () => {
             <ArrowLeft className="w-5 h-5" />
           </Link>
 
-          <img src="/adun-logo.png" alt="ADUN Logo" className="w-12 h-12 object-contain drop-shadow-md rounded-xl bg-white/10 p-1 border border-white/10" />
+          <img
+            src="/adun-logo.png"
+            alt="ADUN Logo"
+            className="w-12 h-12 object-contain drop-shadow-md rounded-xl bg-white/10 p-1 border border-white/10"
+          />
 
           <div>
             <div className="flex items-center gap-2">
@@ -263,7 +334,10 @@ export const ClassroomProjectorView: React.FC = () => {
               </span>
             </div>
             <p className="text-xs sm:text-sm text-slate-300 font-medium truncate max-w-md sm:max-w-xl">
-              {session.course_title} &bull; Lecturer: <span className="text-white font-semibold">{session.lecturer_name || 'Lecturer in Charge'}</span>
+              {session.course_title} &bull; Lecturer:{' '}
+              <span className="text-white font-semibold">
+                {session.lecturer_name || user?.name || 'Lecturer in Charge'}
+              </span>
             </p>
           </div>
         </div>
@@ -272,18 +346,30 @@ export const ClassroomProjectorView: React.FC = () => {
         <div className="flex items-center gap-3 sm:gap-5">
           {/* Lagos Time */}
           <div className="hidden lg:flex flex-col items-end">
-            <span className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">WAT (Lagos Time)</span>
+            <span className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">
+              WAT (Lagos Time)
+            </span>
             <span className="font-mono text-base font-bold text-slate-200">{lagosClock}</span>
           </div>
 
           {/* Time Countdown Pill */}
           <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-800/80 border border-slate-700">
-            <Clock className={`w-4 h-4 ${sessionState === 'expired' ? 'text-rose-400' : 'text-blue-400'}`} />
+            <Clock
+              className={`w-4 h-4 ${sessionState === 'expired' ? 'text-rose-400' : 'text-blue-400'}`}
+            />
             <div className="flex flex-col">
               <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
                 {sessionState === 'grace' ? 'Grace Period Active' : 'Time Remaining'}
               </span>
-              <span className={`font-mono text-sm sm:text-base font-extrabold ${sessionState === 'expired' ? 'text-rose-400' : sessionState === 'grace' ? 'text-amber-300' : 'text-emerald-400'}`}>
+              <span
+                className={`font-mono text-sm sm:text-base font-extrabold ${
+                  sessionState === 'expired'
+                    ? 'text-rose-400'
+                    : sessionState === 'grace'
+                    ? 'text-amber-300'
+                    : 'text-emerald-400'
+                }`}
+              >
                 {timeRemaining}
               </span>
             </div>
@@ -292,7 +378,7 @@ export const ClassroomProjectorView: React.FC = () => {
           {/* Sound Chime Toggle */}
           <button
             onClick={() => setSoundEnabled(!soundEnabled)}
-            className={`p-2.5 rounded-xl border transition ${
+            className={`p-2.5 rounded-xl border transition cursor-pointer ${
               soundEnabled
                 ? 'bg-blue-600/20 border-blue-500/40 text-blue-300 hover:bg-blue-600/30'
                 : 'bg-slate-800 border-slate-700 text-slate-500 hover:text-slate-300'
@@ -305,7 +391,7 @@ export const ClassroomProjectorView: React.FC = () => {
           {/* Fullscreen Toggle */}
           <button
             onClick={toggleFullscreen}
-            className="p-2.5 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-300 transition"
+            className="p-2.5 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-300 transition cursor-pointer"
             title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen (F11)'}
           >
             {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
@@ -315,7 +401,7 @@ export const ClassroomProjectorView: React.FC = () => {
           {session.status === 'active' && (
             <button
               onClick={handleCloseSession}
-              className="hidden sm:inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 text-xs font-semibold transition"
+              className="hidden sm:inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 text-xs font-semibold transition cursor-pointer"
             >
               <PowerOff className="w-4 h-4" />
               <span>End Session</span>
@@ -352,7 +438,7 @@ export const ClassroomProjectorView: React.FC = () => {
               </h3>
             </div>
 
-            {/* High-Contrast Static QR Code */}
+            {/* High-Contrast Static QR Code (Rendered only on token change) */}
             <div className="relative inline-block my-2 p-3 bg-white rounded-2xl shadow-inner border border-slate-100">
               {qrDataUrl ? (
                 <img
@@ -380,9 +466,11 @@ export const ClassroomProjectorView: React.FC = () => {
               {sessionState === 'closed' && (
                 <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-xs rounded-2xl flex flex-col items-center justify-center text-white p-6">
                   <PowerOff className="w-16 h-16 text-rose-500 mb-3" />
-                  <span className="text-2xl font-black tracking-tight">SESSION CLOSED</span>
+                  <span className="text-2xl font-black tracking-tight">
+                    {session.status === 'revoked' ? 'SESSION REVOKED' : 'SESSION CLOSED'}
+                  </span>
                   <p className="text-xs text-slate-300 mt-1 max-w-xs">
-                    The lecturer has concluded this session.
+                    Attendance collection is locked.
                   </p>
                 </div>
               )}
@@ -396,7 +484,7 @@ export const ClassroomProjectorView: React.FC = () => {
               </div>
               <button
                 onClick={handleCopyLink}
-                className="w-full sm:w-auto px-4 py-2 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-medium text-xs flex items-center justify-center gap-1.5 transition shrink-0"
+                className="w-full sm:w-auto px-4 py-2 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-medium text-xs flex items-center justify-center gap-1.5 transition shrink-0 cursor-pointer"
               >
                 {copied ? <Check className="w-4 h-4 text-emerald-300" /> : <Copy className="w-4 h-4" />}
                 <span>{copied ? 'Copied' : 'Copy Link'}</span>
@@ -465,52 +553,47 @@ export const ClassroomProjectorView: React.FC = () => {
                   </p>
                 </div>
               ) : (
-                attendees.map((item, index) => {
-                  const d = new Date(item.signed_at);
-                  const timeStr = d.toLocaleTimeString('en-GB', {
-                    timeZone: 'Africa/Lagos',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit',
-                    hour12: false,
-                  });
-
-                  return (
-                    <div
-                      key={item.id || index}
-                      className="p-3 rounded-2xl bg-slate-800/60 border border-slate-700/60 flex items-center justify-between gap-3 hover:bg-slate-800 transition"
-                    >
-                      <div className="flex items-center gap-3 truncate">
-                        <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
-                          item.status === 'present' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'
-                        }`}>
-                          <CheckCircle2 className="w-4 h-4" />
-                        </div>
-                        <div className="truncate">
-                          <p className="text-sm font-bold text-white truncate">
-                            {item.student_name}
-                          </p>
-                          <p className="text-xs font-mono text-blue-300 font-medium">
-                            {item.matric_no}
-                          </p>
-                        </div>
+                attendees.map((item, index) => (
+                  <div
+                    key={item.id || index}
+                    className="p-3 rounded-2xl bg-slate-800/60 border border-slate-700/60 flex items-center justify-between gap-3 hover:bg-slate-800 transition"
+                  >
+                    <div className="flex items-center gap-3 truncate">
+                      <div
+                        className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
+                          item.status === 'present'
+                            ? 'bg-emerald-500/20 text-emerald-400'
+                            : 'bg-amber-500/20 text-amber-400'
+                        }`}
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
                       </div>
-
-                      <div className="flex flex-col items-end shrink-0">
-                        <span className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${
-                          item.status === 'present' 
-                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
-                            : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                        }`}>
-                          {item.status}
-                        </span>
-                        <span className="text-[10px] font-mono text-slate-400 mt-1">
-                          {timeStr}
-                        </span>
+                      <div className="truncate">
+                        <p className="text-sm font-bold text-white truncate">
+                          {item.student_name}
+                        </p>
+                        <p className="text-xs font-mono text-blue-300 font-medium">
+                          {item.matric_no}
+                        </p>
                       </div>
                     </div>
-                  );
-                })
+
+                    <div className="flex flex-col items-end shrink-0">
+                      <span
+                        className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${
+                          item.status === 'present'
+                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                            : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                        }`}
+                      >
+                        {item.status}
+                      </span>
+                      <span className="text-[10px] font-mono text-slate-400 mt-1">
+                        {formatWATTime(item.signed_at)}
+                      </span>
+                    </div>
+                  </div>
+                ))
               )}
             </div>
           </div>

@@ -22,22 +22,32 @@ import { CourseDetailPage } from './pages/lecturer/CourseDetailPage';
 import { StudentAttendanceCalendarPage } from './pages/lecturer/StudentAttendanceCalendarPage';
 import { ClassroomProjectorView } from './pages/lecturer/ClassroomProjectorView';
 
+const LoadingFallback: React.FC = () => (
+  <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-white">
+    <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
+    <p className="text-sm font-medium text-slate-300">Loading ADUN Portal...</p>
+  </div>
+);
+
 // Route Guards
 const AdminRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated, isAdmin } = useAuth();
+  const { isAuthenticated, isAdmin, loading } = useAuth();
+  if (loading) return <LoadingFallback />;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   if (!isAdmin) return <Navigate to="/lecturer/dashboard" replace />;
   return <>{children}</>;
 };
 
 const LecturerRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, loading } = useAuth();
+  if (loading) return <LoadingFallback />;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   return <>{children}</>;
 };
 
 const RootRedirect: React.FC = () => {
-  const { isAuthenticated, isAdmin } = useAuth();
+  const { isAuthenticated, isAdmin, loading } = useAuth();
+  if (loading) return <LoadingFallback />;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   return isAdmin ? <Navigate to="/admin/home" replace /> : <Navigate to="/lecturer/dashboard" replace />;
 };
@@ -51,7 +61,14 @@ export const App: React.FC = () => {
           <Route path="/login" element={<LoginPage />} />
 
           {/* Standalone Classroom Projector Display */}
-          <Route path="/lecturer/projector/:sessionId" element={<ClassroomProjectorView />} />
+          <Route
+            path="/lecturer/projector/:sessionId"
+            element={
+              <LecturerRoute>
+                <ClassroomProjectorView />
+              </LecturerRoute>
+            }
+          />
 
           {/* Protected App Routes inside Shared Layout */}
           <Route path="/" element={<AppLayout />}>

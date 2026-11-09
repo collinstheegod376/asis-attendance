@@ -1,138 +1,90 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { User } from '../types';
-import { AppStorage } from '../lib/storage';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { User, UserRole } from '../types';
+import { AuthService, AuthLoginResult } from '../services/authService';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
 
 interface AuthContextType {
   user: User | null;
+  role: UserRole | null;
+  loading: boolean;
   isAuthenticated: boolean;
   isAdmin: boolean;
   isLecturer: boolean;
   mustChangePassword: boolean;
-  login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
-  logout: () => void;
+  login: (usernameOrEmail: string, password: string) => Promise<AuthLoginResult>;
+  logout: () => Promise<void>;
   changePassword: (newPassword: string) => Promise<{ success: boolean; error?: string }>;
-  refreshUser: () => void;
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const SESSION_KEY = 'adun_portal_session_user';
-
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(() => {
-    try {
-      const saved = localStorage.getItem(SESSION_KEY);
-      if (!saved) return null;
-      const parsed = JSON.parse(saved);
-      // Verify against current users in storage
-      const existing = AppStorage.getUser(parsed.id);
-      return existing && existing.status === 'active' ? existing : null;
-    } catch {
-      return null;
-    }
-  });
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
 
-  useEffect(() => {
-    AppStorage.init();
+  const refreshUser = useCallback(async () => {
+    try {
+      const current = await AuthService.getCurrentUser();
+      setUser(current);
+    } catch (e) {
+      console.warn('Error refreshing user session:', e);
+      setUser(null);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  const refreshUser = () => {
-    if (user) {
-      const fresh = AppStorage.getUser(user.id);
-      if (fresh) {
-        setUser(fresh);
-        localStorage.setItem(SESSION_KEY, JSON.stringify(fresh));
-      } else {
-        logout();
-      }
-    }
-  };
+  useEffect(() => {
+    // Initial session restore
+    refreshUser();
 
-  const login = async (username: string, password: string): Promise<{ success: boolean; error?: string }> => {
-    const target = AppStorage.findUserByUsername(username);
+    // Listen to Supabase Auth state changes
+    if (isSupabaseConfigured && supabase) {
+      const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+          if (session?.user) {
+            const current = await AuthService.getCurrentUser();
+            setUser(current);
+          }
+        } else if (event === 'SIGNED_OUT') {
+          setUser(null);
+        }
+      });
 
-    if (!target) {
-      return { success: false, error: 'Invalid username or password.' };
-    }
-
-    if (target.status === 'soft_deleted') {
-      return {
-        success: false,
-        error: 'Your account has been deactivated. Please contact the ICT Administrator.',
+      return () => {
+        subscription.unsubscribe();
       };
+    } else {
+      setLoading(false);
     }
+  }, [refreshUser]);
 
-    // Password verification
-    if (target.password !== password) {
-      return { success: false, error: 'Invalid username or password.' };
+  const login = async (usernameOrEmail: string, password: string): Promise<AuthLoginResult> => {
+    const result = await AuthService.login(usernameOrEmail, password);
+    if (result.success && result.user) {
+      setUser(result.user);
     }
-
-    // Success
-    setUser(target);
-    localStorage.setItem(SESSION_KEY, JSON.stringify(target));
-
-    AppStorage.logAudit(
-      target.id,
-      target.name,
-      target.role,
-      'USER_LOGIN',
-      'auth',
-      target.id,
-      { username: target.username, role: target.role }
-    );
-
-    return { success: true };
+    return result;
   };
 
-  const logout = () => {
-    if (user) {
-      AppStorage.logAudit(
-        user.id,
-        user.name,
-        user.role,
-        'USER_LOGOUT',
-        'auth',
-        user.id
-      );
-    }
+  const logout = async () => {
+    await AuthService.signOut();
     setUser(null);
-    localStorage.removeItem(SESSION_KEY);
   };
 
   const changePassword = async (newPassword: string): Promise<{ success: boolean; error?: string }> => {
     if (!user) return { success: false, error: 'No active session.' };
-    if (!newPassword || newPassword.length < 6) {
-      return { success: false, error: 'Password must be at least 6 characters long.' };
+    const res = await AuthService.changePassword(user.id, newPassword);
+    if (res.success) {
+      setUser(prev => (prev ? { ...prev, must_change_password: false } : null));
     }
-
-    const res = AppStorage.updateUser(user.id, {
-      password: newPassword,
-      must_change_password: false,
-    });
-
-    if (!res.success) return res;
-
-    const fresh = AppStorage.getUser(user.id);
-    if (fresh) {
-      setUser(fresh);
-      localStorage.setItem(SESSION_KEY, JSON.stringify(fresh));
-    }
-
-    AppStorage.logAudit(
-      user.id,
-      user.name,
-      user.role,
-      'PASSWORD_CHANGED',
-      'auth',
-      user.id,
-      { reason: 'mandatory_or_voluntary_update' }
-    );
-
-    return { success: true };
+    return res;
   };
 
-  const isAdmin = user?.role === 'admin';
-  const isLecturer = user?.role === 'lecturer';
+  const role = user?.role || null;
+  const isAdmin = role === 'admin';
+  const isLecturer = role === 'lecturer';
   const isAuthenticated = Boolean(user);
   const mustChangePassword = Boolean(user?.must_change_password);
 
@@ -140,6 +92,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     <AuthContext.Provider
       value={{
         user,
+        role,
+        loading,
         isAuthenticated,
         isAdmin,
         isLecturer,

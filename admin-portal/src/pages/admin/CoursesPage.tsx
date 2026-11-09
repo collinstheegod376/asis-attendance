@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { AppStorage } from '../../lib/storage';
+import { AdminService } from '../../services/adminService';
 import { Course, User } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import {
@@ -24,12 +24,14 @@ export const CoursesPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [filterLecturer, setFilterLecturer] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'archived'>('all');
+  const [loading, setLoading] = useState(false);
 
   // Reassign Modal
   const [reassignModalOpen, setReassignModalOpen] = useState(false);
   const [selectedCourse, setSelectedCourse] = useState<Course | null>(null);
   const [targetLecturerId, setTargetLecturerId] = useState('');
   const [reassignError, setReassignError] = useState('');
+  const [isSubmittingReassign, setIsSubmittingReassign] = useState(false);
 
   // Create Course Modal (Admin override)
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -38,39 +40,52 @@ export const CoursesPage: React.FC = () => {
   const [newLecturerId, setNewLecturerId] = useState('');
   const [newDept, setNewDept] = useState('Computer Science');
   const [createError, setCreateError] = useState('');
+  const [isSubmittingCreate, setIsSubmittingCreate] = useState(false);
 
-  const loadData = () => {
-    setCourses(AppStorage.getCourses());
-    const users = AppStorage.getUsers();
-    setLecturers(users.filter(u => u.role === 'lecturer' && u.status === 'active'));
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      const [allCourses, allLecturers] = await Promise.all([
+        AdminService.getAllCourses(),
+        AdminService.getLecturers(),
+      ]);
+      setCourses(allCourses);
+      setLecturers(allLecturers.filter(u => u.status === 'active'));
+    } catch (err) {
+      console.error('Failed to load courses data:', err);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
     loadData();
   }, []);
 
-  const handleToggleArchive = (course: Course) => {
+  const handleToggleArchive = async (course: Course) => {
     if (!currentAdmin) return;
-    const res = AppStorage.toggleArchiveCourse(course.id, {
+    const res = await AdminService.toggleArchiveCourse(course.id, {
       id: currentAdmin.id,
       name: currentAdmin.name,
     });
     if (res.success) {
-      loadData();
+      await loadData();
     } else {
       alert(res.error || 'Failed to update course status.');
     }
   };
 
-  const handleReassignSubmit = (e: React.FormEvent) => {
+  const handleReassignSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setReassignError('');
     if (!selectedCourse || !targetLecturerId || !currentAdmin) return;
 
-    const res = AppStorage.reassignCourse(selectedCourse.id, targetLecturerId, {
+    setIsSubmittingReassign(true);
+    const res = await AdminService.reassignCourse(selectedCourse.id, targetLecturerId, {
       id: currentAdmin.id,
       name: currentAdmin.name,
     });
+    setIsSubmittingReassign(false);
 
     if (!res.success) {
       setReassignError(res.error || 'Failed to reassign course.');
@@ -80,10 +95,10 @@ export const CoursesPage: React.FC = () => {
     setReassignModalOpen(false);
     setSelectedCourse(null);
     setTargetLecturerId('');
-    loadData();
+    await loadData();
   };
 
-  const handleCreateSubmit = (e: React.FormEvent) => {
+  const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setCreateError('');
     if (!newCode.trim() || !newTitle.trim() || !newLecturerId || !currentAdmin) {
@@ -91,7 +106,8 @@ export const CoursesPage: React.FC = () => {
       return;
     }
 
-    const res = AppStorage.createCourse(
+    setIsSubmittingCreate(true);
+    const res = await AdminService.createCourse(
       {
         code: newCode.trim().toUpperCase(),
         title: newTitle.trim(),
@@ -100,6 +116,7 @@ export const CoursesPage: React.FC = () => {
       },
       { id: currentAdmin.id, name: currentAdmin.name }
     );
+    setIsSubmittingCreate(false);
 
     if (!res.success) {
       setCreateError(res.error || 'Failed to create course.');
@@ -110,7 +127,7 @@ export const CoursesPage: React.FC = () => {
     setNewCode('');
     setNewTitle('');
     setNewLecturerId('');
-    loadData();
+    await loadData();
   };
 
   const filteredCourses = courses.filter(c => {
@@ -142,7 +159,7 @@ export const CoursesPage: React.FC = () => {
             setCreateModalOpen(true);
           }}
           disabled={lecturers.length === 0}
-          className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-700 hover:bg-blue-800 active:bg-blue-900 disabled:opacity-50 text-white font-semibold text-sm rounded-xl transition shadow-xs self-start sm:self-auto"
+          className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-700 hover:bg-blue-800 active:bg-blue-900 disabled:opacity-50 text-white font-semibold text-sm rounded-xl transition shadow-xs self-start sm:self-auto cursor-pointer"
         >
           <Plus className="w-4 h-4" />
           <span>Provision Course</span>
@@ -191,7 +208,11 @@ export const CoursesPage: React.FC = () => {
       </div>
 
       {/* Course List or Empty State */}
-      {filteredCourses.length === 0 ? (
+      {loading ? (
+        <div className="bg-white rounded-2xl border border-slate-200/80 p-12 text-center text-sm text-slate-500">
+          Loading institutional courses...
+        </div>
+      ) : filteredCourses.length === 0 ? (
         <EmptyState
           icon={BookOpen}
           title={search ? 'No courses match your search criteria' : 'No courses registered in system'}
@@ -291,7 +312,7 @@ export const CoursesPage: React.FC = () => {
                               setReassignModalOpen(true);
                             }}
                             title="Reassign course to another lecturer"
-                            className="px-2.5 py-1 text-xs font-medium text-slate-700 hover:text-blue-700 hover:bg-blue-50 rounded-lg border border-slate-200 transition"
+                            className="px-2.5 py-1 text-xs font-medium text-slate-700 hover:text-blue-700 hover:bg-blue-50 rounded-lg border border-slate-200 transition cursor-pointer"
                           >
                             Reassign
                           </button>
@@ -299,7 +320,7 @@ export const CoursesPage: React.FC = () => {
                           <button
                             onClick={() => handleToggleArchive(course)}
                             title={isArchived ? 'Restore course to active' : 'Archive course'}
-                            className={`p-1.5 rounded-lg border transition ${
+                            className={`p-1.5 rounded-lg border transition cursor-pointer ${
                               isArchived
                                 ? 'text-emerald-700 border-emerald-200 hover:bg-emerald-50'
                                 : 'text-slate-500 border-slate-200 hover:text-amber-700 hover:bg-amber-50'
@@ -328,7 +349,7 @@ export const CoursesPage: React.FC = () => {
           <div className="w-full max-w-md bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
             <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
               <h3 className="font-bold text-base">Reassign Course Offering</h3>
-              <button onClick={() => setReassignModalOpen(false)} className="text-slate-400 hover:text-white">
+              <button onClick={() => setReassignModalOpen(false)} className="text-slate-400 hover:text-white cursor-pointer">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -373,15 +394,16 @@ export const CoursesPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setReassignModalOpen(false)}
-                  className="px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 rounded-xl"
+                  className="px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 rounded-xl cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-xl shadow-xs"
+                  disabled={isSubmittingReassign}
+                  className="px-5 py-2 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
                 >
-                  Confirm Reassignment
+                  {isSubmittingReassign ? 'Reassigning...' : 'Confirm Reassignment'}
                 </button>
               </div>
             </form>
@@ -395,7 +417,7 @@ export const CoursesPage: React.FC = () => {
           <div className="w-full max-w-md bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
             <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
               <h3 className="font-bold text-base">Provision New Course</h3>
-              <button onClick={() => setCreateModalOpen(false)} className="text-slate-400 hover:text-white">
+              <button onClick={() => setCreateModalOpen(false)} className="text-slate-400 hover:text-white cursor-pointer">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -478,15 +500,16 @@ export const CoursesPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setCreateModalOpen(false)}
-                  className="px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 rounded-xl"
+                  className="px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 rounded-xl cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-xl shadow-xs"
+                  disabled={isSubmittingCreate}
+                  className="px-5 py-2 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
                 >
-                  Create Course
+                  {isSubmittingCreate ? 'Creating...' : 'Create Course'}
                 </button>
               </div>
             </form>

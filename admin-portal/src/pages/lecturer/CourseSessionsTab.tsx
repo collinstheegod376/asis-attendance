@@ -10,15 +10,22 @@ import {
   Check,
   PowerOff,
   Users,
-  ShieldCheck,
   Calendar,
-  ExternalLink,
+  Play,
+  Ban,
+  AlertTriangle,
 } from 'lucide-react';
 import { LecturerService } from '../../services/lecturerService';
-import { AppStorage } from '../../lib/storage';
 import { Course, LectureSession } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { EmptyState } from '../../components/common/EmptyState';
+import {
+  formatWATDate,
+  formatWATTime,
+  parseDateTimeLocalAsWAT,
+  formatToDateTimeLocalWAT,
+} from '../../lib/dateUtils';
+import { AdminService } from '../../services/adminService';
 
 interface CourseSessionsTabProps {
   course: Course;
@@ -29,6 +36,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
   const { user } = useAuth();
 
   const [sessions, setSessions] = useState<LectureSession[]>([]);
+  const [loading, setLoading] = useState(true);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -41,24 +49,29 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [newSessionCreated, setNewSessionCreated] = useState<LectureSession | null>(null);
 
-  const settings = AppStorage.getSettings();
-  const maxDuration = settings.max_session_duration_minutes || 180;
-  const defaultDuration = settings.default_session_duration_minutes || 60;
-  const defaultGrace = settings.grace_minutes || 10;
+  const [maxDuration, setMaxDuration] = useState(180);
 
-  const loadSessions = () => {
-    const list = LecturerService.getCourseSessions(course.id);
-    setSessions(list);
+  const loadSessions = async () => {
+    setLoading(true);
+    try {
+      const list = await LecturerService.getCourseSessions(course.id);
+      setSessions(list);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
     loadSessions();
-    // Default startsAt to current local datetime
-    const now = new Date();
-    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
-    setStartsAt(now.toISOString().slice(0, 16));
-    setDurationMinutes(defaultDuration);
-    setGraceMinutes(defaultGrace);
+
+    AdminService.getSettings().then(settings => {
+      setMaxDuration(settings.max_session_duration_minutes || 180);
+      setDurationMinutes(settings.default_session_duration_minutes || 60);
+      setGraceMinutes(settings.grace_minutes || 10);
+    });
+
+    // Default startsAt to current Africa/Lagos datetime in datetime-local format
+    setStartsAt(formatToDateTimeLocalWAT(new Date()));
   }, [course.id]);
 
   const handleCreateSession = async (e: React.FormEvent) => {
@@ -74,17 +87,28 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
       setFormError('Start date & time is required.');
       return;
     }
-    if (durationMinutes <= 0 || durationMinutes > maxDuration) {
-      setFormError(`Duration must be between 1 and ${maxDuration} minutes.`);
+
+    // Fix QA-22: Reject (never silently clamp) duration > max
+    if (durationMinutes > maxDuration) {
+      setFormError(
+        `Duration of ${durationMinutes} minutes exceeds the institutional limit of ${maxDuration} minutes. Please enter an allowed duration.`
+      );
       return;
     }
+    if (durationMinutes <= 0) {
+      setFormError('Duration must be greater than 0 minutes.');
+      return;
+    }
+
+    // Parse startsAt explicitly as Africa/Lagos (WAT, UTC+1)
+    const isoStartsAt = parseDateTimeLocalAsWAT(startsAt);
 
     setIsSubmitting(true);
     const res = await LecturerService.createLectureSession(
       course.id,
       {
         title: title.trim(),
-        starts_at: new Date(startsAt).toISOString(),
+        starts_at: isoStartsAt,
         duration_minutes: durationMinutes,
         grace_minutes: graceMinutes,
       },
@@ -96,24 +120,57 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
       setFormError(res.error || 'Failed to create session.');
     } else {
       setNewSessionCreated(res.session);
-      loadSessions();
+      await loadSessions();
       onSessionUpdated();
     }
   };
 
-  const handleCloseSession = (sessionId: string) => {
+  const handleStartNow = async (sessionId: string) => {
+    if (!user) return;
+    if (window.confirm('Start this lecture session now? It will immediately become live for attendance.')) {
+      const res = await LecturerService.startScheduledSessionNow(sessionId, { id: user.id, name: user.name });
+      if (res.success) {
+        await loadSessions();
+        onSessionUpdated();
+      } else {
+        alert(res.error || 'Failed to start session.');
+      }
+    }
+  };
+
+  const handleCloseSession = async (sessionId: string) => {
     if (!user) return;
     if (window.confirm('Close this lecture session now? Students will no longer be able to submit attendance.')) {
-      const res = LecturerService.closeLectureSession(sessionId, { id: user.id, name: user.name });
+      const res = await LecturerService.closeLectureSession(sessionId, { id: user.id, name: user.name });
       if (res.success) {
-        loadSessions();
+        await loadSessions();
         onSessionUpdated();
+      } else {
+        alert(res.error || 'Failed to close session.');
+      }
+    }
+  };
+
+  // Fix QA-17: Revoke Lecture Session action
+  const handleRevokeSession = async (sessionId: string) => {
+    if (!user) return;
+    if (
+      window.confirm(
+        'Are you sure you want to REVOKE this lecture session? The session will be permanently locked and flagged as revoked.'
+      )
+    ) {
+      const res = await LecturerService.revokeLectureSession(sessionId, { id: user.id, name: user.name });
+      if (res.success) {
+        await loadSessions();
+        onSessionUpdated();
+      } else {
+        alert(res.error || 'Failed to revoke session.');
       }
     }
   };
 
   const handleCopyLink = (session: LectureSession) => {
-    const host = window.location.origin.includes('localhost') 
+    const host = window.location.origin.includes('localhost')
       ? window.location.origin.replace(':5174', ':5173')
       : window.location.origin;
     const token = session.raw_token || session.id;
@@ -130,7 +187,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
         <div>
           <h3 className="text-base font-bold text-slate-900 tracking-tight flex items-center gap-2">
             <Presentation className="w-5 h-5 text-blue-700" />
-            <span>Lecture Sessions & Classroom QR Codes</span>
+            <span>Lecture Sessions &amp; Classroom QR Codes</span>
           </h3>
           <p className="text-xs text-slate-500 mt-0.5">
             Create attendance sessions with static high-entropy QR codes. Open Projector Mode on the classroom screen.
@@ -143,7 +200,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
             setCreateModalOpen(true);
           }}
           disabled={course.status === 'archived'}
-          className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs transition shadow-xs ${
+          className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs transition shadow-xs cursor-pointer ${
             course.status === 'archived'
               ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
               : 'bg-blue-700 hover:bg-blue-800 text-white active:scale-95'
@@ -155,7 +212,12 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
       </div>
 
       {/* Sessions List */}
-      {sessions.length === 0 ? (
+      {loading ? (
+        <div className="p-12 text-center text-slate-500">
+          <div className="w-8 h-8 border-3 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+          <p className="text-xs">Loading sessions...</p>
+        </div>
+      ) : sessions.length === 0 ? (
         <EmptyState
           icon={Presentation}
           title="No Sessions Created for this Course"
@@ -166,22 +228,28 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           {sessions.map(session => {
-            const startDate = new Date(session.starts_at);
-            const lagosDate = startDate.toLocaleDateString('en-GB', { timeZone: 'Africa/Lagos' });
-            const lagosTime = startDate.toLocaleTimeString('en-GB', { 
-              timeZone: 'Africa/Lagos', 
-              hour: '2-digit', 
-              minute: '2-digit' 
-            });
+            const nowTime = Date.now();
+            const startTime = new Date(session.starts_at).getTime();
+            const expireTime = new Date(session.expires_at).getTime();
 
-            const isExpired = new Date().getTime() > new Date(session.expires_at).getTime();
-            const isActive = session.status === 'active' && !isExpired;
+            // Fix QA-17: Accurate lifecycle state computation
+            const isRevoked = session.status === 'revoked';
+            const isClosed = session.status === 'closed';
+            const isScheduled = !isRevoked && !isClosed && startTime > nowTime;
+            const isLive = !isRevoked && !isClosed && nowTime >= startTime && nowTime <= expireTime;
+            const isExpired = !isRevoked && !isClosed && nowTime > expireTime;
 
             return (
               <div
                 key={session.id}
                 className={`bg-white rounded-2xl border p-5 shadow-xs flex flex-col transition ${
-                  isActive ? 'border-blue-400 ring-2 ring-blue-500/10' : 'border-slate-200 opacity-95'
+                  isLive
+                    ? 'border-emerald-400 ring-2 ring-emerald-500/15'
+                    : isRevoked
+                    ? 'border-rose-300 bg-rose-50/20'
+                    : isScheduled
+                    ? 'border-blue-300'
+                    : 'border-slate-200 opacity-95'
                 }`}
               >
                 {/* Header */}
@@ -195,14 +263,29 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                     </h4>
                   </div>
 
-                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider shrink-0 ${
-                    isActive
-                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 animate-pulse'
-                      : session.status === 'closed'
-                      ? 'bg-slate-100 text-slate-500 border border-slate-200'
-                      : 'bg-rose-50 text-rose-600 border border-rose-200'
-                  }`}>
-                    {isActive ? 'Active Live' : session.status === 'closed' ? 'Closed' : 'Expired'}
+                  {/* Fix QA-17: Standardized lifecycle badges */}
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider shrink-0 ${
+                      isLive
+                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 animate-pulse'
+                        : isScheduled
+                        ? 'bg-blue-100 text-blue-800 border border-blue-200'
+                        : isRevoked
+                        ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                        : isClosed
+                        ? 'bg-slate-800 text-slate-100 border border-slate-900'
+                        : 'bg-slate-100 text-slate-600 border border-slate-200'
+                    }`}
+                  >
+                    {isLive
+                      ? 'Active Live'
+                      : isScheduled
+                      ? 'Scheduled'
+                      : isRevoked
+                      ? 'Revoked'
+                      : isClosed
+                      ? 'Closed'
+                      : 'Expired'}
                   </span>
                 </div>
 
@@ -211,17 +294,17 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                   <div className="flex items-center justify-between">
                     <span className="flex items-center gap-1.5 text-slate-500">
                       <Calendar className="w-3.5 h-3.5 text-blue-600" />
-                      Scheduled:
+                      Starts (WAT):
                     </span>
                     <span className="font-semibold text-slate-800">
-                      {lagosDate} at {lagosTime} (WAT)
+                      {formatWATDate(session.starts_at)} at {formatWATTime(session.starts_at)}
                     </span>
                   </div>
 
                   <div className="flex items-center justify-between">
                     <span className="flex items-center gap-1.5 text-slate-500">
                       <Clock className="w-3.5 h-3.5 text-blue-600" />
-                      Duration & Grace:
+                      Duration &amp; Grace:
                     </span>
                     <span className="font-semibold text-slate-800">
                       {session.duration_minutes} min &bull; {session.grace_minutes}m grace
@@ -239,46 +322,87 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                   </div>
                 </div>
 
-                {/* Actions */}
+                {/* Actions per state (Fix QA-17) */}
                 <div className="mt-auto pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <Link
-                      to={`/lecturer/projector/${session.id}`}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-bold text-xs transition shadow-2xs"
-                    >
-                      <Presentation className="w-3.5 h-3.5" />
-                      <span>Projector Mode</span>
-                    </Link>
+                    {/* Projector View (always available unless revoked) */}
+                    {!isRevoked && (
+                      <Link
+                        to={`/lecturer/projector/${session.id}`}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-bold text-xs transition shadow-2xs"
+                      >
+                        <Presentation className="w-3.5 h-3.5" />
+                        <span>Projector Mode</span>
+                      </Link>
+                    )}
 
-                    <button
-                      onClick={() => handleCopyLink(session)}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition"
-                      title="Copy student join link"
-                    >
-                      {copiedId === session.id ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-emerald-600" />
-                          <span className="text-emerald-700 font-bold">Copied</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" />
-                          <span>Link</span>
-                        </>
-                      )}
-                    </button>
+                    {!isRevoked && !isClosed && (
+                      <button
+                        onClick={() => handleCopyLink(session)}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition cursor-pointer"
+                        title="Copy student join link"
+                      >
+                        {copiedId === session.id ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-600" />
+                            <span className="text-emerald-700 font-bold">Copied</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5" />
+                            <span>Link</span>
+                          </>
+                        )}
+                      </button>
+                    )}
                   </div>
 
-                  {isActive && (
-                    <button
-                      onClick={() => handleCloseSession(session.id)}
-                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-rose-600 hover:bg-rose-50 text-xs font-semibold transition"
-                      title="Close and end session early"
-                    >
-                      <PowerOff className="w-3.5 h-3.5" />
-                      <span>End</span>
-                    </button>
-                  )}
+                  <div className="flex items-center gap-1.5">
+                    {/* Scheduled actions: Start Now + Cancel/Close */}
+                    {isScheduled && (
+                      <>
+                        <button
+                          onClick={() => handleStartNow(session.id)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold transition cursor-pointer"
+                          title="Start session now"
+                        >
+                          <Play className="w-3.5 h-3.5" />
+                          <span>Start Now</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleCloseSession(session.id)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-slate-600 hover:bg-slate-100 text-xs font-semibold transition cursor-pointer"
+                          title="Cancel session"
+                        >
+                          <span>Cancel</span>
+                        </button>
+                      </>
+                    )}
+
+                    {/* Active actions: End + Revoke */}
+                    {isLive && (
+                      <>
+                        <button
+                          onClick={() => handleCloseSession(session.id)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-amber-700 hover:bg-amber-50 text-xs font-semibold transition cursor-pointer"
+                          title="End session"
+                        >
+                          <PowerOff className="w-3.5 h-3.5" />
+                          <span>End</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleRevokeSession(session.id)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-rose-600 hover:bg-rose-50 text-xs font-semibold transition cursor-pointer"
+                          title="Revoke session"
+                        >
+                          <Ban className="w-3.5 h-3.5" />
+                          <span>Revoke</span>
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
             );
@@ -332,6 +456,9 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                       onChange={e => setStartsAt(e.target.value)}
                       className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-600 text-sm font-medium"
                     />
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Time is interpreted in West Africa Time (WAT, UTC+1). Setting a future time marks the session as Scheduled.
+                    </p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
@@ -343,88 +470,81 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                         type="number"
                         min="1"
                         max={maxDuration}
+                        required
                         value={durationMinutes}
-                        onChange={e => setDurationMinutes(parseInt(e.target.value) || 60)}
-                        className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-600 text-sm"
+                        onChange={e => setDurationMinutes(parseInt(e.target.value, 10) || 0)}
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-600 text-sm font-semibold"
                       />
-                      <span className="text-[10px] text-slate-400 mt-1 block">
-                        Admin maximum: {maxDuration} mins
+                      <span className="text-[10px] text-slate-400 mt-0.5 block">
+                        Max allowed: {maxDuration} mins
                       </span>
                     </div>
 
                     <div>
                       <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                        Grace Period (Mins)
+                        Late Grace Period (Mins)
                       </label>
                       <input
                         type="number"
                         min="0"
-                        max="60"
+                        max={durationMinutes}
+                        required
                         value={graceMinutes}
-                        onChange={e => setGraceMinutes(parseInt(e.target.value) || 10)}
-                        className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-600 text-sm"
+                        onChange={e => setGraceMinutes(parseInt(e.target.value, 10) || 0)}
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-600 text-sm font-semibold"
                       />
-                      <span className="text-[10px] text-slate-400 mt-1 block">
-                        After grace: marked Late
+                      <span className="text-[10px] text-slate-400 mt-0.5 block">
+                        Signed after this: marked Late
                       </span>
                     </div>
-                  </div>
-
-                  <div className="p-3 rounded-xl bg-blue-50 border border-blue-100 flex items-start gap-2 text-[11px] text-blue-900">
-                    <ShieldCheck className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-                    <span>
-                      High-entropy cryptographic token generated server-side. Static QR code does not rotate during class.
-                    </span>
                   </div>
 
                   <div className="flex items-center justify-end gap-3 pt-3">
                     <button
                       type="button"
                       onClick={() => setCreateModalOpen(false)}
-                      className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-xl transition"
+                      className="px-4 py-2.5 rounded-xl text-slate-600 hover:bg-slate-100 text-xs font-semibold cursor-pointer"
                     >
                       Cancel
                     </button>
                     <button
                       type="submit"
                       disabled={isSubmitting}
-                      className="px-5 py-2.5 text-xs font-bold text-white bg-blue-700 hover:bg-blue-800 rounded-xl transition shadow-xs flex items-center gap-1.5"
+                      className="px-5 py-2.5 rounded-xl bg-blue-700 hover:bg-blue-800 active:bg-blue-900 text-white font-bold text-xs shadow-xs disabled:opacity-50 cursor-pointer"
                     >
-                      {isSubmitting ? 'Creating...' : 'Create & Generate QR'}
+                      {isSubmitting ? 'Creating...' : 'Create Lecture Session'}
                     </button>
                   </div>
                 </form>
               </>
             ) : (
-              /* Success & Launch Projector Dialog */
-              <div className="text-center py-2">
-                <div className="w-14 h-14 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto mb-4">
+              <div className="text-center py-4">
+                <div className="w-14 h-14 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto mb-3">
                   <CheckCircle2 className="w-8 h-8" />
                 </div>
-                <h3 className="text-xl font-black text-slate-900 tracking-tight mb-1">
-                  Session Created Successfully!
+                <h3 className="text-xl font-bold text-slate-900 mb-1">
+                  Session Ready!
                 </h3>
                 <p className="text-xs text-slate-500 mb-6 max-w-sm mx-auto">
-                  "{newSessionCreated.title}" is now active. Launch Classroom Projector Mode to project the scannable code on the lecture hall screen.
+                  Static high-entropy token generated. Launch Classroom Projector view to display the QR code.
                 </p>
 
                 <div className="flex flex-col gap-3">
                   <Link
                     to={`/lecturer/projector/${newSessionCreated.id}`}
-                    className="w-full py-3 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-bold text-sm transition shadow-md flex items-center justify-center gap-2"
+                    className="w-full py-3 bg-blue-700 hover:bg-blue-800 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center justify-center gap-2"
                   >
                     <Presentation className="w-4 h-4" />
-                    <span>Launch Classroom Projector Mode</span>
+                    <span>Open Classroom Projector View</span>
                   </Link>
-
                   <button
                     onClick={() => {
-                      setNewSessionCreated(null);
                       setCreateModalOpen(false);
+                      setNewSessionCreated(null);
                     }}
-                    className="w-full py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs transition"
+                    className="text-xs text-slate-500 hover:text-slate-800 font-semibold cursor-pointer py-1"
                   >
-                    View Sessions List
+                    Close Dialog
                   </button>
                 </div>
               </div>

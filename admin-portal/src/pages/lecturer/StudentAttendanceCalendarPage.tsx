@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   Calendar as CalendarIcon,
   ChevronLeft,
@@ -24,20 +24,27 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { LecturerService, StudentCalendarSessionDetail } from '../../services/lecturerService';
-import { AppStorage } from '../../lib/storage';
 import { Course, StudentMaster, DeviceBinding } from '../../types';
+import {
+  getWATDateParts,
+  getWATDateKey,
+  formatWATDate,
+  formatWATTime,
+} from '../../lib/dateUtils';
 
 export const StudentAttendanceCalendarPage: React.FC = () => {
   const { id: courseId, studentId } = useParams<{ id: string; studentId: string }>();
   const { user } = useAuth();
+  const navigate = useNavigate();
 
   const [course, setCourse] = useState<Course | null>(null);
   const [student, setStudent] = useState<StudentMaster | null>(null);
   const [sessions, setSessions] = useState<StudentCalendarSessionDetail[]>([]);
-  const [overallPercentage, setOverallPercentage] = useState<number>(100);
+  const [overallPercentage, setOverallPercentage] = useState<number>(0);
   const [attendedCount, setAttendedCount] = useState<number>(0);
   const [totalSessions, setTotalSessions] = useState<number>(0);
   const [deviceBinding, setDeviceBinding] = useState<DeviceBinding | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
 
   // View mode switcher: 'calendar' | 'list'
   const [activeView, setActiveView] = useState<'calendar' | 'list'>('calendar');
@@ -54,32 +61,37 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
   const [resetLoading, setResetLoading] = useState(false);
   const [resetFeedback, setResetFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
-  const loadData = () => {
+  const loadData = async () => {
     if (!courseId || !studentId) return;
+    setLoading(true);
 
-    const c = AppStorage.getCourse(courseId);
-    setCourse(c || null);
+    try {
+      const c = await LecturerService.getCourseById(courseId);
 
-    const details = LecturerService.getStudentCalendarDetails(courseId, studentId);
-    setStudent(details.student || null);
-    setSessions(details.sessions);
-    setOverallPercentage(details.overallPercentage);
-    setAttendedCount(details.attendedCount);
-    setTotalSessions(details.totalSessions);
+      // Fix SEC-17: Ownership verification
+      if (c && user && user.role === 'lecturer' && c.lecturer_id !== user.id) {
+        alert('You do not have access to this course.');
+        navigate('/lecturer/dashboard', { replace: true });
+        return;
+      }
 
-    // Load device binding status for this student
-    if (details.student) {
-      const bindings = AppStorage.getDeviceBindings();
-      const b = bindings.find(
-        x => x.student_id === details.student?.id || x.matric_no.toLowerCase() === details.student?.matric_no.toLowerCase()
-      );
-      setDeviceBinding(b || null);
+      setCourse(c);
+
+      const details = await LecturerService.getStudentCalendarDetails(courseId, studentId);
+      setStudent(details.student || null);
+      setSessions(details.sessions);
+      setOverallPercentage(details.overallPercentage);
+      setAttendedCount(details.attendedCount);
+      setTotalSessions(details.totalSessions);
+      setDeviceBinding(details.deviceBinding);
+    } finally {
+      setLoading(false);
     }
   };
 
   useEffect(() => {
     loadData();
-  }, [courseId, studentId]);
+  }, [courseId, studentId, user]);
 
   // Calendar Month Navigation
   const prevMonth = () => {
@@ -90,10 +102,9 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
     setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
   };
 
-  const currentYear = currentDate.getFullYear();
-  const currentMonth = currentDate.getMonth();
+  const { year: currentYear, month: currentMonth } = getWATDateParts(currentDate);
 
-  // Days in month calculation
+  // Days in month calculation according to WAT
   const firstDayOfMonth = new Date(currentYear, currentMonth, 1).getDay(); // 0 is Sunday
   const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
 
@@ -120,10 +131,10 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
     e.preventDefault();
     if (!student || !course || !user) return;
 
-    if (!resetReason.trim()) {
+    if (!resetReason.trim() || resetReason.trim().length < 10) {
       setResetFeedback({
         type: 'error',
-        message: 'A mandatory justification reason is required for emergency device reset.',
+        message: 'A mandatory forensic reason (minimum 10 characters) is required for device reset.',
       });
       return;
     }
@@ -131,10 +142,11 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
     setResetLoading(true);
     setResetFeedback(null);
 
-    const res = LecturerService.emergencyResetDevice(student.id, course.id, resetReason.trim(), {
-      id: user.id,
-      name: user.name,
-    });
+    const res = await LecturerService.emergencyResetDevice(
+      student.id,
+      course.id,
+      resetReason.trim()
+    );
 
     setResetLoading(false);
 
@@ -143,7 +155,7 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
         type: 'success',
         message: `Device lock successfully reset for ${student.matric_no}. Action recorded to device_events and audit_logs.`,
       });
-      loadData();
+      await loadData();
       setTimeout(() => {
         setResetModalOpen(false);
       }, 1800);
@@ -181,12 +193,21 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
     );
   };
 
+  if (loading) {
+    return (
+      <div className="p-12 text-center text-slate-500">
+        <div className="w-8 h-8 border-3 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+        <p className="text-xs">Loading student attendance ledger...</p>
+      </div>
+    );
+  }
+
   if (!course || !student) {
     return (
-      <div className="p-8 text-center">
+      <div className="p-8 text-center max-w-md mx-auto">
         <AlertCircle className="w-12 h-12 text-slate-400 mx-auto mb-3" />
-        <h3 className="text-lg font-bold text-slate-800">Student or Course Not Found</h3>
-        <p className="text-xs text-slate-500 mt-1 mb-4">The student record or course could not be retrieved.</p>
+        <h3 className="text-lg font-bold text-slate-800">Record Not Found</h3>
+        <p className="text-xs text-slate-500 mt-1 mb-4">The course or student could not be located.</p>
         <Link
           to="/lecturer/dashboard"
           className="px-4 py-2 bg-blue-700 text-white rounded-xl text-xs font-semibold"
@@ -197,11 +218,10 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
     );
   }
 
-  // Map sessions to calendar days: "YYYY-M-D"
+  // Fix QA-20: Map sessions to calendar days using Africa/Lagos (WAT, UTC+1)
   const sessionsByDay: { [key: string]: StudentCalendarSessionDetail[] } = {};
   sessions.forEach(sess => {
-    const sDate = new Date(sess.starts_at);
-    const key = `${sDate.getFullYear()}-${sDate.getMonth()}-${sDate.getDate()}`;
+    const key = getWATDateKey(sess.starts_at);
     if (!sessionsByDay[key]) sessionsByDay[key] = [];
     sessionsByDay[key].push(sess);
   });
@@ -214,7 +234,7 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
         <span>&bull;</span>
         <Link to={`/lecturer/courses/${course.id}`} className="hover:text-blue-700">{course.code}</Link>
         <span>&bull;</span>
-        <span className="text-slate-900 font-bold">Attendance & Device Security</span>
+        <span className="text-slate-900 font-bold">Attendance &amp; Device Security</span>
       </div>
 
       {/* Student Profile & Quota Banner */}
@@ -263,7 +283,7 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
                   setResetReason('Student verified with physical ID during lecture');
                   setResetModalOpen(true);
                 }}
-                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 text-xs font-bold transition shadow-2xs"
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 text-xs font-bold transition shadow-2xs cursor-pointer"
                 title="Perform emergency in-class device reset for student"
               >
                 <KeyRound className="w-3.5 h-3.5" />
@@ -282,155 +302,108 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
             </span>
           </div>
 
-          <div className="w-px h-8 bg-slate-200" />
+          <div className="w-px h-10 bg-slate-200" />
 
-          <div>
-            <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Sessions</span>
-            <span className="text-sm font-bold text-slate-700">
-              {attendedCount} / {totalSessions} held
-            </span>
-          </div>
-
-          <div className="w-px h-8 bg-slate-200" />
-
-          <div>
-            <span className={`px-2.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${
-              overallPercentage >= 75
-                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                : 'bg-rose-50 text-rose-700 border border-rose-200'
-            }`}>
-              {overallPercentage >= 75 ? 'Exam Eligible' : 'Barred (<75%)'}
+          <div className="text-left">
+            <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Sessions Attended</span>
+            <span className="text-sm font-black font-mono text-blue-900">
+              {attendedCount} of {totalSessions}
             </span>
           </div>
         </div>
       </div>
 
-      {/* Read-Only Regulatory Notice & Option 2 Strict Device Policy */}
-      <div className="p-4 rounded-2xl bg-blue-50/60 border border-blue-200/60 flex items-start gap-3 text-blue-900 text-xs font-medium">
-        <Lock className="w-4 h-4 text-blue-700 shrink-0 mt-0.5" />
-        <div className="space-y-0.5">
-          <p>
-            <strong>Option 2 Strict Device Binding Policy:</strong> Each student is cryptographically locked to a single verified device per matriculation ID to eliminate proxy attendance.
-          </p>
-          <p className="text-blue-800 text-[11px]">
-            Lecturers can perform an emergency device unlock in class if a student switches verified hardware. All actions are audited and logged to <code className="bg-blue-100 px-1 py-0.5 rounded font-mono font-bold">device_events</code>.
-          </p>
-        </div>
-      </div>
-
-      {/* View Switcher: Calendar View vs Attendance List Table */}
-      <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-xs space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
-          <div className="flex items-center gap-3">
-            {activeView === 'calendar' ? (
+      {/* Main Ledger Card with Toggle Switcher */}
+      <div className="bg-white rounded-3xl border border-slate-200 p-6 sm:p-8 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-100">
+          <div>
+            <h2 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2">
               <CalendarIcon className="w-5 h-5 text-blue-700" />
-            ) : (
-              <ListFilter className="w-5 h-5 text-blue-700" />
-            )}
-            <h2 className="text-lg font-bold text-slate-900">
-              {activeView === 'calendar' ? `${monthNames[currentMonth]} ${currentYear}` : 'Attendance Session List'}
+              <span>Session Attendance Calendar (Africa/Lagos WAT)</span>
             </h2>
+            <p className="text-xs text-slate-500">
+              Biometric selfies, GPS coordinates, and hardware tamper logs for each course session.
+            </p>
           </div>
 
-          {/* View Mode Toggle Buttons */}
-          <div className="flex items-center gap-2">
-            <div className="bg-slate-100 p-1 rounded-xl flex items-center gap-1 text-xs font-semibold">
-              <button
-                onClick={() => setActiveView('calendar')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition ${
-                  activeView === 'calendar'
-                    ? 'bg-white text-blue-900 shadow-2xs font-bold'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <CalendarIcon className="w-3.5 h-3.5" />
-                <span>Calendar View</span>
-              </button>
+          {/* Switcher: Calendar Grid vs Linear List */}
+          <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-semibold self-start sm:self-auto">
+            <button
+              onClick={() => setActiveView('calendar')}
+              className={`px-3 py-1.5 rounded-lg transition cursor-pointer ${
+                activeView === 'calendar'
+                  ? 'bg-white text-blue-900 shadow-2xs font-bold'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Calendar Grid
+            </button>
+            <button
+              onClick={() => setActiveView('list')}
+              className={`px-3 py-1.5 rounded-lg transition cursor-pointer ${
+                activeView === 'list'
+                  ? 'bg-white text-blue-900 shadow-2xs font-bold'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              List View
+            </button>
+          </div>
+        </div>
 
-              <button
-                onClick={() => setActiveView('list')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition ${
-                  activeView === 'list'
-                    ? 'bg-white text-blue-900 shadow-2xs font-bold'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <ListFilter className="w-3.5 h-3.5" />
-                <span>Attendance List ({sessions.length})</span>
-              </button>
-            </div>
-
-            {/* Month Steppers (Visible when in Calendar view) */}
-            {activeView === 'calendar' && (
-              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
+        {/* View 1: Calendar Grid (Bucketed strictly by WAT) */}
+        {activeView === 'calendar' && (
+          <div>
+            {/* Month Header & Nav */}
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-bold text-slate-800 font-mono">
+                {monthNames[currentMonth]} {currentYear} (WAT)
+              </h3>
+              <div className="flex items-center gap-1">
                 <button
                   onClick={prevMonth}
-                  className="p-1.5 rounded-lg text-slate-600 hover:bg-white hover:text-slate-900 transition"
-                  title="Previous Month"
+                  className="p-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 cursor-pointer"
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
                 <button
                   onClick={nextMonth}
-                  className="p-1.5 rounded-lg text-slate-600 hover:bg-white hover:text-slate-900 transition"
-                  title="Next Month"
+                  className="p-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 cursor-pointer"
                 >
                   <ChevronRight className="w-4 h-4" />
                 </button>
               </div>
-            )}
-          </div>
-        </div>
-
-        {/* View 1: Calendar Grid View */}
-        {activeView === 'calendar' && (
-          <div>
-            {/* Legend */}
-            <div className="flex flex-wrap items-center gap-4 pb-3 text-xs text-slate-600">
-              <span className="flex items-center gap-1.5">
-                <span className="w-3 h-3 rounded-full bg-emerald-500" />
-                <span>Present (On Time)</span>
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="w-3 h-3 rounded-full bg-amber-500" />
-                <span>Late Check-in</span>
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="w-3 h-3 rounded-full bg-rose-500" />
-                <span>Absent</span>
-              </span>
-              <span className="text-slate-400 text-[11px] ml-auto">
-                Click any lecture session below to inspect Proxy Risk, Device Fingerprint & Biometric Evidence
-              </span>
             </div>
 
-            {/* Calendar Grid Header */}
-            <div className="grid grid-cols-7 gap-2 text-center text-xs font-semibold text-slate-400 py-2 border-b border-slate-100">
-              <div>SUN</div>
-              <div>MON</div>
-              <div>TUE</div>
-              <div>WED</div>
-              <div>THU</div>
-              <div>FRI</div>
-              <div>SAT</div>
+            {/* Weekday headers */}
+            <div className="grid grid-cols-7 gap-2 mb-2 text-center text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+              <span>Sun</span>
+              <span>Mon</span>
+              <span>Tue</span>
+              <span>Wed</span>
+              <span>Thu</span>
+              <span>Fri</span>
+              <span>Sat</span>
             </div>
 
-            <div className="grid grid-cols-7 gap-2 pt-3">
-              {/* Leading blank days */}
+            {/* Days Grid */}
+            <div className="grid grid-cols-7 gap-2">
+              {/* Blank offset days */}
               {Array.from({ length: firstDayOfMonth }).map((_, i) => (
                 <div key={`blank-${i}`} className="h-24 rounded-2xl bg-slate-50/50 opacity-40" />
               ))}
 
-              {/* Days of the month */}
+              {/* Days of the month bucketed by WAT */}
               {Array.from({ length: daysInMonth }).map((_, i) => {
                 const dayNum = i + 1;
                 const key = `${currentYear}-${currentMonth}-${dayNum}`;
                 const daySessions = sessionsByDay[key] || [];
 
+                const watToday = getWATDateParts(new Date());
                 const isToday =
-                  new Date().getDate() === dayNum &&
-                  new Date().getMonth() === currentMonth &&
-                  new Date().getFullYear() === currentYear;
+                  watToday.day === dayNum &&
+                  watToday.month === currentMonth &&
+                  watToday.year === currentYear;
 
                 return (
                   <div
@@ -457,7 +430,7 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
                       )}
                     </div>
 
-                    {/* Session dots & Proxy Risk Indicator */}
+                    {/* Session dots */}
                     <div className="space-y-1">
                       {daySessions.map((sess, idx) => (
                         <div
@@ -469,30 +442,20 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
                               ? 'bg-amber-100 text-amber-800'
                               : 'bg-rose-100 text-rose-800'
                           }`}
-                          title={`${sess.session_title} (${sess.status.toUpperCase()}) - Proxy Risk: ${(sess.proxy_risk || 'low').toUpperCase()}`}
+                          title={`${sess.session_title} (${sess.status.toUpperCase()})`}
                         >
                           <div className="flex items-center gap-1 truncate">
-                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                              sess.status === 'present'
-                                ? 'bg-emerald-600'
-                                : sess.status === 'late'
-                                ? 'bg-amber-600'
-                                : 'bg-rose-600'
-                            }`} />
+                            <span
+                              className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                sess.status === 'present'
+                                  ? 'bg-emerald-600'
+                                  : sess.status === 'late'
+                                  ? 'bg-amber-600'
+                                  : 'bg-rose-600'
+                              }`}
+                            />
                             <span className="truncate">{sess.session_title}</span>
                           </div>
-
-                          {sess.status !== 'absent' && (
-                            <span className={`text-[9px] uppercase px-1 rounded font-black shrink-0 ${
-                              sess.proxy_risk === 'high' 
-                                ? 'bg-rose-200 text-rose-900' 
-                                : sess.proxy_risk === 'medium'
-                                ? 'bg-amber-200 text-amber-900'
-                                : 'bg-emerald-200 text-emerald-900'
-                            }`}>
-                              {sess.proxy_risk === 'high' ? 'High' : sess.proxy_risk === 'medium' ? 'Med' : 'Low'}
-                            </span>
-                          )}
                         </div>
                       ))}
                     </div>
@@ -514,28 +477,20 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
                   <th className="px-4 py-3">Sign-in Time (WAT)</th>
                   <th className="px-4 py-3">Attendance</th>
                   <th className="px-4 py-3">Proxy Risk</th>
-                  <th className="px-4 py-3">Device Snapshot Ref</th>
                   <th className="px-4 py-3 text-right">Audit Evidence</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {sessions.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
+                    <td colSpan={6} className="px-4 py-8 text-center text-slate-400">
                       No lecture sessions recorded for this course yet.
                     </td>
                   </tr>
                 ) : (
                   sessions.map((sess, idx) => {
                     const hasSigned = sess.status !== 'absent';
-                    const signTimeStr = sess.signed_at
-                      ? new Date(sess.signed_at).toLocaleTimeString('en-GB', {
-                          timeZone: 'Africa/Lagos',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                          second: '2-digit',
-                        })
-                      : '—';
+                    const signTimeStr = sess.signed_at ? formatWATTime(sess.signed_at) : '—';
 
                     return (
                       <tr key={sess.session_id || idx} className="hover:bg-blue-50/20 transition">
@@ -549,36 +504,25 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
                           {signTimeStr}
                         </td>
                         <td className="px-4 py-3.5">
-                          <span className={`px-2 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
-                            sess.status === 'present'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : sess.status === 'late'
-                              ? 'bg-amber-100 text-amber-800'
-                              : 'bg-rose-100 text-rose-800'
-                          }`}>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
+                              sess.status === 'present'
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : sess.status === 'late'
+                                ? 'bg-amber-100 text-amber-800'
+                                : 'bg-rose-100 text-rose-800'
+                            }`}
+                          >
                             {sess.status}
                           </span>
                         </td>
                         <td className="px-4 py-3.5">
-                          {hasSigned ? (
-                            renderProxyRiskBadge(sess.proxy_risk)
-                          ) : (
-                            <span className="text-slate-400 text-xs italic">N/A (Absent)</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3.5">
-                          {hasSigned ? (
-                            <span className="font-mono text-[11px] font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
-                              {sess.fingerprint_snapshot_ref || 'DEV-SNAP-VERIFIED'}
-                            </span>
-                          ) : (
-                            <span className="text-slate-400 text-xs italic">—</span>
-                          )}
+                          {hasSigned ? renderProxyRiskBadge(sess.proxy_risk) : <span className="text-slate-400 text-xs italic">N/A</span>}
                         </td>
                         <td className="px-4 py-3.5 text-right">
                           <button
                             onClick={() => handleSelectDate(sess)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-800 font-bold text-xs transition"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-800 font-bold text-xs transition cursor-pointer"
                           >
                             <Eye className="w-3.5 h-3.5 text-blue-700" />
                             <span>Inspect</span>
@@ -597,22 +541,24 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
       {/* Session Verification Detail & Audit Modal */}
       {selectedSession && (
         <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl border border-slate-100 relative">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl border border-slate-100 relative max-h-[90vh] overflow-y-auto">
             <button
               onClick={() => setSelectedSession(null)}
-              className="absolute right-6 top-6 p-1.5 rounded-full text-slate-400 hover:bg-slate-100 transition"
+              className="absolute right-6 top-6 p-1.5 rounded-full text-slate-400 hover:bg-slate-100 transition cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
 
             <div className="flex items-center gap-2 mb-1">
-              <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
-                selectedSession.status === 'present'
-                  ? 'bg-emerald-100 text-emerald-800'
-                  : selectedSession.status === 'late'
-                  ? 'bg-amber-100 text-amber-800'
-                  : 'bg-rose-100 text-rose-800'
-              }`}>
+              <span
+                className={`px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
+                  selectedSession.status === 'present'
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : selectedSession.status === 'late'
+                    ? 'bg-amber-100 text-amber-800'
+                    : 'bg-rose-100 text-rose-800'
+                }`}
+              >
                 {selectedSession.status}
               </span>
               <span className="text-xs font-mono text-slate-400">
@@ -631,60 +577,38 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
               </div>
             ) : (
               <div className="space-y-4">
-                {/* Evidence Grid with Anti-Proxy and Device Binding Snapshot */}
+                {/* Evidence Grid with Anti-Proxy */}
                 <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 space-y-2.5 text-xs text-slate-700">
-                  {/* Proxy Risk Assessment */}
                   <div className="flex items-center justify-between pb-2 border-b border-slate-200/60">
                     <span className="flex items-center gap-1.5 text-slate-700 font-bold">
                       <ShieldCheck className="w-3.5 h-3.5 text-blue-600" />
                       Proxy Risk Assessment:
                     </span>
-                    <div>
-                      {renderProxyRiskBadge(selectedSession.proxy_risk)}
-                    </div>
+                    <div>{renderProxyRiskBadge(selectedSession.proxy_risk)}</div>
                   </div>
 
-                  {/* Device Binding Snapshot Reference */}
-                  <div className="flex items-center justify-between">
-                    <span className="flex items-center gap-1.5 text-slate-500 font-medium">
-                      <Smartphone className="w-3.5 h-3.5 text-blue-600" />
-                      Device Snapshot Ref:
-                    </span>
-                    <span className="font-mono font-bold text-blue-900 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-                      {selectedSession.fingerprint_snapshot_ref || 'DEV-SNAP-VERIFIED'}
-                    </span>
-                  </div>
-
-                  {/* Sign-in Time */}
                   <div className="flex items-center justify-between">
                     <span className="flex items-center gap-1.5 text-slate-500 font-medium">
                       <Clock className="w-3.5 h-3.5 text-blue-600" />
                       Sign-in Time (WAT):
                     </span>
                     <span className="font-mono font-bold text-slate-900">
-                      {selectedSession.signed_at 
-                        ? new Date(selectedSession.signed_at).toLocaleTimeString('en-GB', { 
-                            timeZone: 'Africa/Lagos', 
-                            hour: '2-digit', 
-                            minute: '2-digit', 
-                            second: '2-digit' 
-                          }) 
-                        : 'N/A'}
+                      {selectedSession.signed_at ? formatWATTime(selectedSession.signed_at) : 'N/A'}
                     </span>
                   </div>
 
-                  {/* GPS Coordinates */}
                   <div className="flex items-center justify-between">
                     <span className="flex items-center gap-1.5 text-slate-500 font-medium">
                       <MapPin className="w-3.5 h-3.5 text-blue-600" />
                       GPS Coordinates:
                     </span>
                     <span className="font-mono text-slate-900">
-                      {selectedSession.latitude ? `${selectedSession.latitude.toFixed(5)}, ${selectedSession.longitude?.toFixed(5)}` : 'Campus Radius Evidence'}
+                      {selectedSession.latitude
+                        ? `${selectedSession.latitude.toFixed(5)}, ${selectedSession.longitude?.toFixed(5)}`
+                        : 'Campus Radius Evidence'}
                     </span>
                   </div>
 
-                  {/* Location Accuracy */}
                   <div className="flex items-center justify-between">
                     <span className="flex items-center gap-1.5 text-slate-500 font-medium">
                       <ShieldCheck className="w-3.5 h-3.5 text-blue-600" />
@@ -695,7 +619,6 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
                     </span>
                   </div>
 
-                  {/* Digital Receipt ID */}
                   <div className="flex items-center justify-between">
                     <span className="flex items-center gap-1.5 text-slate-500 font-medium">
                       <FileCheck2 className="w-3.5 h-3.5 text-blue-600" />
@@ -743,7 +666,7 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
               </span>
               <button
                 onClick={() => setSelectedSession(null)}
-                className="px-5 py-2 text-xs font-bold text-white bg-blue-700 hover:bg-blue-800 rounded-xl transition"
+                className="px-5 py-2 text-xs font-bold text-white bg-blue-700 hover:bg-blue-800 rounded-xl transition cursor-pointer"
               >
                 Close
               </button>
@@ -758,7 +681,7 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
           <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl border border-slate-100 relative">
             <button
               onClick={() => setResetModalOpen(false)}
-              className="absolute right-6 top-6 p-1.5 rounded-full text-slate-400 hover:bg-slate-100 transition"
+              className="absolute right-6 top-6 p-1.5 rounded-full text-slate-400 hover:bg-slate-100 transition cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -770,104 +693,56 @@ export const StudentAttendanceCalendarPage: React.FC = () => {
             <h3 className="text-xl font-bold text-slate-900 tracking-tight">
               Emergency Device Reset
             </h3>
-            <p className="text-xs text-slate-500 mt-1 mb-4 leading-relaxed">
-              Initiate an emergency device unlock for <strong className="text-slate-800">{student.surname} {student.first_name}</strong> (<span className="font-mono text-blue-900 font-bold">{student.matric_no}</span>) enrolled in <span className="font-bold text-blue-900">{course.code}</span>.
+            <p className="text-xs text-slate-500 mt-1 mb-5">
+              Reset hardware device binding for student <span className="font-bold text-blue-900">{student.surname} {student.first_name}</span> (<span className="font-mono font-bold">{student.matric_no}</span>). The student will be permitted to register a new device during check-in.
             </p>
-
-            {/* Policy Notice */}
-            <div className="p-3 mb-4 rounded-xl bg-blue-50/80 border border-blue-200 text-blue-900 text-xs">
-              <p className="font-bold mb-0.5 flex items-center gap-1.5">
-                <ShieldCheck className="w-3.5 h-3.5 text-blue-700" />
-                <span>Strict Hardware Binding Protocol (Option 2)</span>
-              </p>
-              <p className="text-blue-800 text-[11px]">
-                Resetting allows the student to immediately register attendance on a new verified handset. Per institutional anti-proxy compliance, a mandatory justification is required and will be permanently recorded in <code className="bg-blue-100 px-1 py-0.5 rounded font-mono font-bold">device_events</code> and <code className="bg-blue-100 px-1 py-0.5 rounded font-mono font-bold">audit_logs</code>.
-              </p>
-            </div>
 
             {resetFeedback && (
               <div
-                className={`p-3.5 mb-4 rounded-xl text-xs flex items-center gap-2.5 ${
+                className={`p-3.5 mb-5 rounded-xl border text-xs flex items-start gap-2.5 ${
                   resetFeedback.type === 'success'
-                    ? 'bg-emerald-50 text-emerald-900 border border-emerald-200'
-                    : 'bg-rose-50 text-rose-900 border border-rose-200'
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                    : 'bg-rose-50 border-rose-200 text-rose-800'
                 }`}
               >
                 {resetFeedback.type === 'success' ? (
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
                 ) : (
-                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
                 )}
-                <span className="font-semibold">{resetFeedback.message}</span>
+                <span>{resetFeedback.message}</span>
               </div>
             )}
 
             <form onSubmit={handleInitiateDeviceReset} className="space-y-4">
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Mandatory Verification Reason <span className="text-rose-600">*</span>
+                  Audit &amp; Forensic Reason (Min 10 chars) <span className="text-rose-500">*</span>
                 </label>
                 <textarea
                   required
                   rows={3}
                   value={resetReason}
                   onChange={e => setResetReason(e.target.value)}
-                  placeholder="e.g. Student verified with physical ID card during lecture..."
-                  className="w-full p-3 rounded-xl border border-slate-300 text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+                  placeholder="e.g. Student replaced stolen phone; verified student identity via National ID card"
+                  className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
                 />
               </div>
 
-              {/* Quick Select Buttons */}
-              <div>
-                <span className="text-[10px] font-bold uppercase text-slate-400 block mb-1.5">
-                  Quick Justification Presets:
-                </span>
-                <div className="flex flex-wrap gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setResetReason('Student verified with physical ID during lecture')}
-                    className="text-[11px] px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium transition"
-                  >
-                    Verified with physical ID
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setResetReason('Student smartphone battery depleted; switching to verified backup handset')}
-                    className="text-[11px] px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium transition"
-                  >
-                    Battery depleted / backup phone
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setResetReason('Student browser cache cleared / hardware changed')}
-                    className="text-[11px] px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium transition"
-                  >
-                    Storage cleared
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+              <div className="flex items-center justify-end gap-3 pt-3">
                 <button
                   type="button"
                   onClick={() => setResetModalOpen(false)}
-                  className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-xl transition"
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={resetLoading || !resetReason.trim()}
-                  className="px-5 py-2.5 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-xl transition shadow-xs disabled:opacity-50 flex items-center gap-1.5"
+                  disabled={resetLoading || resetReason.trim().length < 10}
+                  className="px-5 py-2.5 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-xl transition shadow-xs disabled:opacity-50 cursor-pointer"
                 >
-                  {resetLoading ? (
-                    <span>Processing Reset...</span>
-                  ) : (
-                    <>
-                      <RotateCcw className="w-4 h-4" />
-                      <span>Confirm & Reset Device Lock</span>
-                    </>
-                  )}
+                  {resetLoading ? 'Resetting...' : 'Authorize Reset'}
                 </button>
               </div>
             </form>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { AppStorage } from '../../lib/storage';
+import { AdminService } from '../../services/adminService';
 import { SystemSettings, LocationMode } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import {
@@ -13,19 +13,52 @@ import {
   AlertTriangle,
   RotateCcw,
   Save,
+  Loader2,
 } from 'lucide-react';
+
+const defaultSettings: SystemSettings = {
+  location_mode: 'evidence_only',
+  campus_center_lat: 6.2235,
+  campus_center_lng: 6.6180,
+  campus_radius_m: 1500,
+  location_accuracy_threshold_m: 50,
+  default_session_duration_minutes: 60,
+  max_session_duration_minutes: 180,
+  selfie_retention_days: 90,
+  grace_minutes: 15,
+  max_active_courses_per_lecturer: 9,
+  rate_limit_token_per_minute: 60,
+  rate_limit_matric_per_minute: 30,
+  updated_at: new Date().toISOString(),
+};
 
 export const SettingsPage: React.FC = () => {
   const { user: currentAdmin } = useAuth();
-  const [settings, setSettings] = useState<SystemSettings>(AppStorage.getSettings());
+  const [settings, setSettings] = useState<SystemSettings>(defaultSettings);
+  const [loading, setLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
   useEffect(() => {
-    setSettings(AppStorage.getSettings());
+    let isMounted = true;
+    async function loadSettings() {
+      try {
+        const s = await AdminService.getSettings();
+        if (isMounted) setSettings(s);
+      } catch (err) {
+        console.error('Failed to load settings:', err);
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    }
+    loadSettings();
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
     setSaveSuccess(false);
@@ -53,10 +86,12 @@ export const SettingsPage: React.FC = () => {
       }
     }
 
-    const res = AppStorage.updateSettings(settings, {
+    setIsSaving(true);
+    const res = await AdminService.updateSettings(settings, {
       id: currentAdmin.id,
       name: currentAdmin.name,
     });
+    setIsSaving(false);
 
     if (!res.success) {
       setErrorMessage(res.error || 'Failed to update system settings.');

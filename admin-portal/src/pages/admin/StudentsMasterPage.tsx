@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
-import { AppStorage } from '../../lib/storage';
+import { normalizeMatric } from '../../lib/storage';
+import { AdminService } from '../../services/adminService';
 import { StudentMaster } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import {
@@ -17,12 +18,14 @@ import {
   Check,
   X,
   FileDown,
+  Loader2,
 } from 'lucide-react';
 import { EmptyState } from '../../components/common/EmptyState';
 
 export const StudentsMasterPage: React.FC = () => {
   const { user: currentAdmin } = useAuth();
   const [students, setStudents] = useState<StudentMaster[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [filterLevel, setFilterLevel] = useState<string>('all');
   const [filterProgram, setFilterProgram] = useState<string>('all');
@@ -40,8 +43,16 @@ export const StudentsMasterPage: React.FC = () => {
   const [importMode, setImportMode] = useState<'append' | 'replace'>('append');
   const [importSuccessMsg, setImportSuccessMsg] = useState('');
 
-  const loadData = () => {
-    setStudents(AppStorage.getStudentsMaster());
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      const data = await AdminService.getStudentsMaster();
+      setStudents(data);
+    } catch (err) {
+      console.error('Failed to load students master:', err);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -94,7 +105,7 @@ export const StudentsMasterPage: React.FC = () => {
           const phone = getVal(['phone', 'phone_number', 'mobile']);
           const searchKey = getVal(['search_key', 'searchkey']);
 
-          const normMatric = AppStorage.normalizeMatric(rawMatric);
+          const normMatric = normalizeMatric(rawMatric);
 
           if (!normMatric) {
             rejected.push({ row: rowNum, matric_no: '', reason: 'Empty matric number' });
@@ -148,20 +159,26 @@ export const StudentsMasterPage: React.FC = () => {
     reader.readAsBinaryString(file);
   };
 
-  const handleConfirmImport = () => {
+  const handleConfirmImport = async () => {
     if (!uploadPreview || !currentAdmin) return;
 
-    const result = AppStorage.importStudentsMaster(
+    setIsProcessing(true);
+    const result = await AdminService.importStudentsMaster(
       uploadPreview.accepted,
       importMode === 'replace',
       { id: currentAdmin.id, name: currentAdmin.name }
     );
+    setIsProcessing(false);
 
-    setImportSuccessMsg(
-      `Successfully loaded ${result.accepted} students into master directory. (${result.rejected} rejected)`
-    );
-    setUploadPreview(null);
-    loadData();
+    if (result.success) {
+      setImportSuccessMsg(
+        `Successfully loaded ${result.accepted} students into master directory. (${result.rejected} rejected)`
+      );
+      setUploadPreview(null);
+      await loadData();
+    } else {
+      alert(result.error || 'Failed to import students master directory.');
+    }
   };
 
   const handleDownloadSample = () => {

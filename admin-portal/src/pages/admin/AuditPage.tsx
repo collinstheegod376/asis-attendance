@@ -1,7 +1,14 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { AppStorage } from '../../lib/storage';
+import { AdminService } from '../../services/adminService';
 import { AuditLog } from '../../types';
+import {
+  REFERENCE_CODE_MAP,
+  ReferenceCode,
+  matchReferenceCode,
+  formatReferenceCode,
+} from '../../lib/referenceCodes';
+import { formatWATDateTime } from '../../lib/dateUtils';
 import {
   ShieldCheck,
   Search,
@@ -20,42 +27,54 @@ import {
 } from 'lucide-react';
 import { EmptyState } from '../../components/common/EmptyState';
 
-const REFERENCE_CODES = [
-  { code: 'BIND-200', label: 'BIND-200: Device Match Verified' },
-  { code: 'BIND-201', label: 'BIND-201: Initial Device Hardware Bound' },
-  { code: 'BIND-202', label: 'BIND-202: Hardware Fingerprint Mismatch' },
-  { code: 'BIND-203', label: 'BIND-203: Device Cookie Token Missing' },
-  { code: 'BIND-204', label: 'BIND-204: Cryptographic Cookie Mismatch' },
-  { code: 'BIND-205', label: 'BIND-205: Administrative Reset Executed' },
-  { code: 'BIND-206', label: 'BIND-206: Proxy / VPN Anomaly Detected' },
-  { code: 'BIND-207', label: 'BIND-207: Shared Device Exception Granted' },
-  { code: 'BIND-208', label: 'BIND-208: Shared Device Exception Revoked' },
-  { code: 'BIND-209', label: 'BIND-209: Device Revoked / Blacklisted' },
+const EVENT_TYPE_OPTIONS = [
+  { value: 'all', label: 'All Event Types' },
+  { value: 'bind', label: 'bind (Initial registration)' },
+  { value: 'match', label: 'match (Fingerprint verified)' },
+  { value: 'mismatch', label: 'mismatch (Hardware conflict)' },
+  { value: 'cookie_missing', label: 'cookie_missing (Token missing)' },
+  { value: 'cookie_mismatch', label: 'cookie_mismatch (Token invalid)' },
+  { value: 'incognito', label: 'incognito (Private browsing)' },
+  { value: 'admin_reset', label: 'admin_reset (Authorized reset)' },
+  { value: 'proxy_detected', label: 'proxy_detected (Network proxy/VPN)' },
 ];
 
 export const AuditPage: React.FC = () => {
   const [logs, setLogs] = useState<AuditLog[]>([]);
+  const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [filterRole, setFilterRole] = useState<'all' | 'admin' | 'lecturer' | 'system'>('all');
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'device_binding' | 'users' | 'courses' | 'settings'>('all');
   const [refCodeFilter, setRefCodeFilter] = useState<string>('all');
+  const [eventTypeFilter, setEventTypeFilter] = useState<string>('all');
   const [selectedLogForDetail, setSelectedLogForDetail] = useState<AuditLog | null>(null);
 
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      const data = await AdminService.getAuditLogs(300);
+      setLogs(data);
+    } catch (err) {
+      console.error('Failed to load audit logs:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    setLogs(AppStorage.getAuditLogs());
+    loadData();
   }, []);
 
   const handleExport = () => {
-    if (logs.length === 0) return;
+    if (filteredLogs.length === 0) return;
 
     const exportRows = filteredLogs.map(l => {
-      const refCode = l.reference_code || (l.metadata && l.metadata.reference_code) || 'N/A';
+      const rawCode = l.reference_code || (l.metadata && l.metadata.reference_code) || '';
+      const displayCode = rawCode ? formatReferenceCode(rawCode) : 'N/A';
       return {
         'Log ID': l.id,
-        'Timestamp (WAT/Lagos)': new Date(l.created_at).toLocaleString('en-GB', {
-          timeZone: 'Africa/Lagos',
-        }),
-        'Reference Code': refCode,
+        'Timestamp (WAT/Lagos)': formatWATDateTime(l.created_at),
+        'Reference Code': displayCode,
         'Actor Name': l.actor_name,
         'Actor Role': l.actor_role,
         'Action': l.action,
@@ -74,7 +93,7 @@ export const AuditPage: React.FC = () => {
   const filteredLogs = useMemo(() => {
     return logs.filter(l => {
       const q = search.trim().toLowerCase();
-      const ref = (l.reference_code || (l.metadata && l.metadata.reference_code) || '').toLowerCase();
+      const rawRef = (l.reference_code || (l.metadata && l.metadata.reference_code) || '').toLowerCase();
 
       // Search matches
       const matchesSearch =
@@ -83,7 +102,7 @@ export const AuditPage: React.FC = () => {
         l.action.toLowerCase().includes(q) ||
         l.entity.toLowerCase().includes(q) ||
         (l.entity_id && l.entity_id.toLowerCase().includes(q)) ||
-        ref.includes(q) ||
+        rawRef.includes(q) ||
         (l.metadata && JSON.stringify(l.metadata).toLowerCase().includes(q));
 
       // Role filter
@@ -95,28 +114,38 @@ export const AuditPage: React.FC = () => {
         matchesCategory =
           l.entity === 'device_bindings' ||
           l.action.toLowerCase().includes('device') ||
-          Boolean(ref);
+          Boolean(rawRef);
       } else if (categoryFilter === 'users') {
         matchesCategory = l.entity === 'users' || l.action.toLowerCase().includes('user') || l.action.toLowerCase().includes('lecturer');
       } else if (categoryFilter === 'courses') {
         matchesCategory =
           l.entity === 'courses' ||
           l.entity === 'course_roster' ||
-          l.entity === 'sessions' ||
-          l.action.toLowerCase().includes('course');
+          l.entity === 'lecture_sessions' ||
+          l.action.toLowerCase().includes('course') ||
+          l.action.toLowerCase().includes('session');
       } else if (categoryFilter === 'settings') {
         matchesCategory = l.entity === 'settings' || l.action.toLowerCase().includes('settings');
       }
 
-      // Reference code filter
+      // Reference code prefix filter (using startsWith per SEC-20 / STEP 8)
       let matchesRefCode = true;
       if (refCodeFilter !== 'all') {
-        matchesRefCode = ref === refCodeFilter.toLowerCase();
+        matchesRefCode = matchReferenceCode(rawRef, refCodeFilter);
       }
 
-      return matchesSearch && matchesRole && matchesCategory && matchesRefCode;
+      // Event type filter
+      let matchesEventType = true;
+      if (eventTypeFilter !== 'all') {
+        const eventTypeInMeta = l.metadata?.event_type || l.metadata?.action || '';
+        matchesEventType =
+          l.action.toLowerCase().includes(eventTypeFilter.toLowerCase()) ||
+          String(eventTypeInMeta).toLowerCase().includes(eventTypeFilter.toLowerCase());
+      }
+
+      return matchesSearch && matchesRole && matchesCategory && matchesRefCode && matchesEventType;
     });
-  }, [logs, search, filterRole, categoryFilter, refCodeFilter]);
+  }, [logs, search, filterRole, categoryFilter, refCodeFilter, eventTypeFilter]);
 
   // Count device binding events
   const deviceSecurityEventCount = logs.filter(
@@ -152,7 +181,7 @@ export const AuditPage: React.FC = () => {
           <button
             onClick={handleExport}
             disabled={filteredLogs.length === 0}
-            className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 active:bg-slate-950 disabled:opacity-50 text-white font-semibold text-xs rounded-xl transition shadow-xs"
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 active:bg-slate-950 disabled:opacity-50 text-white font-semibold text-xs rounded-xl transition shadow-xs cursor-pointer"
           >
             <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
             <span>Export Audit Trail (.xlsx)</span>
@@ -194,18 +223,34 @@ export const AuditPage: React.FC = () => {
             </select>
           </div>
 
-          {/* Reference Code Filter */}
+          {/* Reference Code Prefix Filter (BIND-200..BIND-206) */}
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-slate-500 font-medium">Ref Code:</span>
             <select
               value={refCodeFilter}
               onChange={e => setRefCodeFilter(e.target.value)}
-              className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600 max-w-[170px]"
+              className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600 max-w-[210px]"
             >
               <option value="all">All Ref Codes</option>
-              {REFERENCE_CODES.map(rc => (
-                <option key={rc.code} value={rc.code}>
-                  {rc.code}
+              {Object.entries(REFERENCE_CODE_MAP).map(([code, def]) => (
+                <option key={code} value={code}>
+                  {code} — {def}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Event Type Filter */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-slate-500 font-medium">Event:</span>
+            <select
+              value={eventTypeFilter}
+              onChange={e => setEventTypeFilter(e.target.value)}
+              className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+            >
+              {EVENT_TYPE_OPTIONS.map(opt => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
                 </option>
               ))}
             </select>
@@ -236,7 +281,7 @@ export const AuditPage: React.FC = () => {
             setCategoryFilter('device_binding');
             setRefCodeFilter('all');
           }}
-          className={`px-3 py-1 rounded-lg border text-xs font-medium transition inline-flex items-center gap-1.5 ${
+          className={`px-3 py-1 rounded-lg border text-xs font-medium transition inline-flex items-center gap-1.5 cursor-pointer ${
             categoryFilter === 'device_binding' && refCodeFilter === 'all'
               ? 'bg-blue-600 text-white border-blue-600 shadow-2xs'
               : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
@@ -251,7 +296,7 @@ export const AuditPage: React.FC = () => {
             setCategoryFilter('device_binding');
             setRefCodeFilter('BIND-205');
           }}
-          className={`px-3 py-1 rounded-lg border text-xs font-medium transition inline-flex items-center gap-1.5 ${
+          className={`px-3 py-1 rounded-lg border text-xs font-medium transition inline-flex items-center gap-1.5 cursor-pointer ${
             refCodeFilter === 'BIND-205'
               ? 'bg-amber-600 text-white border-amber-600 shadow-2xs'
               : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
@@ -266,7 +311,7 @@ export const AuditPage: React.FC = () => {
             setCategoryFilter('device_binding');
             setRefCodeFilter('BIND-201');
           }}
-          className={`px-3 py-1 rounded-lg border text-xs font-medium transition inline-flex items-center gap-1.5 ${
+          className={`px-3 py-1 rounded-lg border text-xs font-medium transition inline-flex items-center gap-1.5 cursor-pointer ${
             refCodeFilter === 'BIND-201'
               ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
               : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
@@ -279,27 +324,28 @@ export const AuditPage: React.FC = () => {
         <button
           onClick={() => {
             setCategoryFilter('device_binding');
-            setRefCodeFilter('BIND-207');
+            setRefCodeFilter('BIND-202');
           }}
-          className={`px-3 py-1 rounded-lg border text-xs font-medium transition inline-flex items-center gap-1.5 ${
-            refCodeFilter === 'BIND-207'
-              ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
+          className={`px-3 py-1 rounded-lg border text-xs font-medium transition inline-flex items-center gap-1.5 cursor-pointer ${
+            refCodeFilter === 'BIND-202'
+              ? 'bg-rose-600 text-white border-rose-600 shadow-2xs'
               : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
           }`}
         >
-          <span className="font-mono font-bold">BIND-207</span>
-          <span>(Shared Device Exception)</span>
+          <span className="font-mono font-bold">BIND-202</span>
+          <span>(Device Mismatch)</span>
         </button>
 
-        {(categoryFilter !== 'all' || refCodeFilter !== 'all' || search) && (
+        {(categoryFilter !== 'all' || refCodeFilter !== 'all' || eventTypeFilter !== 'all' || search) && (
           <button
             onClick={() => {
               setCategoryFilter('all');
               setRefCodeFilter('all');
+              setEventTypeFilter('all');
               setSearch('');
               setFilterRole('all');
             }}
-            className="text-[11px] text-slate-500 hover:text-slate-800 underline ml-2"
+            className="text-[11px] text-slate-500 hover:text-slate-800 underline ml-2 cursor-pointer"
           >
             Reset Filters
           </button>
@@ -307,7 +353,11 @@ export const AuditPage: React.FC = () => {
       </div>
 
       {/* Main Table or Empty State */}
-      {filteredLogs.length === 0 ? (
+      {loading ? (
+        <div className="bg-white rounded-2xl border border-slate-200/80 p-12 text-center text-sm text-slate-500">
+          Loading audit logs from Supabase...
+        </div>
+      ) : filteredLogs.length === 0 ? (
         <EmptyState
           icon={ShieldCheck}
           title={search || refCodeFilter !== 'all' ? 'No audit records match your filter criteria' : 'No audit records in system'}
@@ -320,7 +370,7 @@ export const AuditPage: React.FC = () => {
               <thead className="sticky top-0 bg-slate-100/95 backdrop-blur-xs z-10 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
                 <tr>
                   <th className="py-3 px-4">Lagos Timestamp (WAT)</th>
-                  <th className="py-3 px-4">Reference Code</th>
+                  <th className="py-3 px-4">Reference Code &amp; Diagnostics</th>
                   <th className="py-3 px-4">Actor</th>
                   <th className="py-3 px-4">Role</th>
                   <th className="py-3 px-4">Action</th>
@@ -330,11 +380,12 @@ export const AuditPage: React.FC = () => {
               </thead>
               <tbody className="divide-y divide-slate-100 text-xs">
                 {filteredLogs.map(log => {
-                  const refCode = log.reference_code || (log.metadata && log.metadata.reference_code);
+                  const rawCode = log.reference_code || (log.metadata && log.metadata.reference_code);
+                  const formattedCode = rawCode ? formatReferenceCode(rawCode) : null;
                   const isDeviceSecurity =
                     log.entity === 'device_bindings' ||
                     log.action.toLowerCase().includes('device') ||
-                    Boolean(refCode);
+                    Boolean(rawCode);
 
                   return (
                     <tr
@@ -345,19 +396,14 @@ export const AuditPage: React.FC = () => {
                     >
                       {/* Lagos Timestamp */}
                       <td className="py-3 px-4 font-mono text-slate-600 whitespace-nowrap text-[11px]">
-                        {new Date(log.created_at).toLocaleString('en-GB', {
-                          timeZone: 'Africa/Lagos',
-                          dateStyle: 'short',
-                          timeStyle: 'medium',
-                        })}{' '}
-                        <span className="text-[10px] text-slate-400">WAT</span>
+                        {formatWATDateTime(log.created_at)}
                       </td>
 
-                      {/* Reference Code Badge */}
+                      {/* Reference Code with Prefix Label and Full Code per STEP 8 */}
                       <td className="py-3 px-4 whitespace-nowrap">
-                        {refCode ? (
+                        {formattedCode ? (
                           <span className="font-mono text-[11px] font-bold px-2 py-0.5 rounded bg-slate-900 text-white tracking-wide shadow-2xs">
-                            {refCode}
+                            {formattedCode}
                           </span>
                         ) : (
                           <span className="text-slate-300 font-mono text-xs">—</span>
@@ -445,7 +491,7 @@ export const AuditPage: React.FC = () => {
               <h3 className="font-bold text-base">Audit Event Payload Detail</h3>
               <button
                 onClick={() => setSelectedLogForDetail(null)}
-                className="text-slate-400 hover:text-white"
+                className="text-slate-400 hover:text-white cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -463,7 +509,7 @@ export const AuditPage: React.FC = () => {
               <div className="pt-2 flex justify-end">
                 <button
                   onClick={() => setSelectedLogForDetail(null)}
-                  className="px-4 py-2 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-xl"
+                  className="px-4 py-2 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-xl cursor-pointer"
                 >
                   Close
                 </button>

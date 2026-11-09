@@ -27,17 +27,15 @@ export const LoginPage: React.FC = () => {
     setLoading(false);
 
     if (!result.success) {
-      setError(result.error || 'Authentication failed.');
+      setError(result.error || 'Authentication failed. Please verify your credentials.');
       return;
     }
 
-    // Role-based redirect
-    const userRole = username.trim().toLowerCase() === 'admin' ? 'admin' : undefined;
-    if (userRole === 'admin') {
-      navigate('/admin/home');
+    // Role-based redirect (Fixes QA-21)
+    if (result.role === 'admin') {
+      navigate('/admin/home', { replace: true });
     } else {
-      // Default to admin or lecturer home based on session check
-      navigate('/admin/home');
+      navigate('/lecturer/dashboard', { replace: true });
     }
   };
 
@@ -123,7 +121,7 @@ export const LoginPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-600"
+                  className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
                 >
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
@@ -133,7 +131,7 @@ export const LoginPage: React.FC = () => {
             <button
               type="submit"
               disabled={loading}
-              className="w-full mt-2 flex items-center justify-center gap-2 py-3 px-4 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 active:bg-blue-900 rounded-xl transition shadow-xs disabled:opacity-50"
+              className="w-full mt-2 flex items-center justify-center gap-2 py-3 px-4 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 active:bg-blue-900 rounded-xl transition shadow-xs disabled:opacity-50 cursor-pointer"
             >
               {loading ? (
                 <span>Verifying...</span>

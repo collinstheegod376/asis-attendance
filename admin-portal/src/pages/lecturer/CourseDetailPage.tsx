@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, Link, useSearchParams } from 'react-router-dom';
+import { useParams, Link, useSearchParams, useNavigate } from 'react-router-dom';
 import {
   BookOpen,
   Users,
@@ -15,7 +15,6 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { LecturerService } from '../../services/lecturerService';
-import { AppStorage } from '../../lib/storage';
 import { Course } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { CourseRosterTab } from './CourseRosterTab';
@@ -26,22 +25,37 @@ export const CourseDetailPage: React.FC = () => {
   const { id: courseId } = useParams<{ id: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
+  const navigate = useNavigate();
 
   const [course, setCourse] = useState<Course | null>(null);
+  const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'sessions' | 'roster' | 'students'>(
     (searchParams.get('tab') as any) || 'sessions'
   );
   const [isExporting, setIsExporting] = useState(false);
 
-  const loadCourse = () => {
+  const loadCourse = async () => {
     if (!courseId) return;
-    const c = AppStorage.getCourse(courseId);
-    setCourse(c || null);
+    setLoading(true);
+    try {
+      const c = await LecturerService.getCourseById(courseId);
+
+      // Fix SEC-17: Ownership verification
+      if (c && user && user.role === 'lecturer' && c.lecturer_id !== user.id) {
+        alert('You do not have access to this course.');
+        navigate('/lecturer/dashboard', { replace: true });
+        return;
+      }
+
+      setCourse(c);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
     loadCourse();
-  }, [courseId]);
+  }, [courseId, user]);
 
   const handleTabChange = (tab: 'sessions' | 'roster' | 'students') => {
     setActiveTab(tab);
@@ -60,22 +74,31 @@ export const CourseDetailPage: React.FC = () => {
     }
   };
 
-  const handleArchiveToggle = () => {
+  const handleArchiveToggle = async () => {
     if (!course || !user) return;
     if (course.status === 'active') {
-      if (window.confirm('Archive this course? It will become read-only and free up an active course slot.')) {
-        LecturerService.archiveCourse(course.id, { id: user.id, name: user.name });
-        loadCourse();
+      if (window.confirm('Archive this course? It will become read-only, close active sessions, and free up an active course slot.')) {
+        await LecturerService.archiveCourse(course.id, { id: user.id, name: user.name });
+        await loadCourse();
       }
     } else {
-      const res = LecturerService.unarchiveCourse(course.id, user.id, { id: user.id, name: user.name });
+      const res = await LecturerService.unarchiveCourse(course.id, user.id, { id: user.id, name: user.name });
       if (!res.success) {
         alert(res.error || 'Cannot unarchive course.');
       } else {
-        loadCourse();
+        await loadCourse();
       }
     }
   };
+
+  if (loading) {
+    return (
+      <div className="p-12 text-center text-slate-500">
+        <div className="w-8 h-8 border-3 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+        <p className="text-xs">Loading course details...</p>
+      </div>
+    );
+  }
 
   if (!course) {
     return (
@@ -109,117 +132,102 @@ export const CourseDetailPage: React.FC = () => {
             <span className="px-3 py-1 rounded-xl bg-blue-50 text-blue-800 font-mono font-black text-sm border border-blue-100">
               {course.code}
             </span>
-            <span className={`px-2.5 py-0.5 rounded-full text-xs font-extrabold uppercase tracking-wider ${
-              course.status === 'active'
-                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                : 'bg-slate-100 text-slate-600'
-            }`}>
+            <span
+              className={`px-2.5 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider ${
+                course.status === 'active'
+                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                  : 'bg-slate-100 text-slate-600 border border-slate-200'
+              }`}
+            >
               {course.status}
             </span>
           </div>
 
-          <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
+          <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
             {course.title}
           </h1>
-
-          <p className="text-xs text-slate-500 mt-1 font-medium">
-            Lecturer in Charge: <strong className="text-slate-800">{course.lecturer_name || user?.name}</strong>
-            {course.department && <span> &bull; {course.department}</span>}
+          <p className="text-xs text-slate-500 mt-1">
+            Department of Computer Science &bull; Faculty of Natural & Applied Sciences
           </p>
         </div>
 
-        {/* Action Buttons: 2-Sheet Export & Archive */}
-        <div className="flex flex-wrap items-center gap-3">
+        {/* Action Buttons */}
+        <div className="flex flex-wrap items-center gap-2.5">
           <button
             onClick={handleExportExcel}
             disabled={isExporting}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 text-white font-bold text-xs transition shadow-xs"
-            title="Download formatted 2-Sheet Excel file (Summary Sheet + Session Detail Sheet)"
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs transition shadow-xs cursor-pointer disabled:opacity-50"
+            title="Download full 2-sheet attendance ledger"
           >
-            {isExporting ? (
-              <>
-                <RefreshCw className="w-4 h-4 animate-spin" />
-                <span>Generating XLSX...</span>
-              </>
-            ) : (
-              <>
-                <FileSpreadsheet className="w-4 h-4" />
-                <span>Export Excel (2-Sheet)</span>
-              </>
-            )}
+            <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+            <span>{isExporting ? 'Generating Excel...' : 'Export Attendance (XLSX)'}</span>
           </button>
 
           <button
             onClick={handleArchiveToggle}
-            className={`inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border text-xs font-semibold transition ${
+            className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-xs transition shadow-xs cursor-pointer ${
               course.status === 'active'
-                ? 'bg-white text-slate-600 border-slate-200 hover:bg-amber-50 hover:text-amber-700 hover:border-amber-200'
-                : 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100'
+                ? 'border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-800'
+                : 'border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-800'
             }`}
           >
             <Archive className="w-4 h-4" />
-            <span>{course.status === 'active' ? 'Archive Course' : 'Unarchive Course'}</span>
+            <span>{course.status === 'active' ? 'Archive Course' : 'Activate Course'}</span>
           </button>
         </div>
       </div>
 
-      {/* Navigation Tabs */}
-      <div className="flex items-center gap-2 border-b border-slate-200 overflow-x-auto">
+      {/* Tabs Navigation */}
+      <div className="flex border-b border-slate-200 gap-8">
         <button
           onClick={() => handleTabChange('sessions')}
-          className={`flex items-center gap-2 px-4 py-3 font-bold text-xs border-b-2 transition whitespace-nowrap ${
+          className={`pb-3 text-sm font-bold flex items-center gap-2 transition cursor-pointer ${
             activeTab === 'sessions'
-              ? 'border-blue-700 text-blue-900'
-              : 'border-transparent text-slate-500 hover:text-slate-900'
+              ? 'text-blue-700 border-b-2 border-blue-700'
+              : 'text-slate-500 hover:text-slate-800'
           }`}
         >
           <Presentation className="w-4 h-4" />
-          <span>Sessions & Projector</span>
-          <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-[10px]">
-            {course.sessions_count || 0}
-          </span>
+          <span>Lecture Sessions &amp; QR</span>
         </button>
 
         <button
           onClick={() => handleTabChange('roster')}
-          className={`flex items-center gap-2 px-4 py-3 font-bold text-xs border-b-2 transition whitespace-nowrap ${
+          className={`pb-3 text-sm font-bold flex items-center gap-2 transition cursor-pointer ${
             activeTab === 'roster'
-              ? 'border-blue-700 text-blue-900'
-              : 'border-transparent text-slate-500 hover:text-slate-900'
+              ? 'text-blue-700 border-b-2 border-blue-700'
+              : 'text-slate-500 hover:text-slate-800'
           }`}
         >
-          <FileSpreadsheet className="w-4 h-4" />
-          <span>Course Roster Upload</span>
-          <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-[10px]">
-            {course.enrolled_count || 0}
-          </span>
+          <Users className="w-4 h-4" />
+          <span>Course Roster</span>
         </button>
 
         <button
           onClick={() => handleTabChange('students')}
-          className={`flex items-center gap-2 px-4 py-3 font-bold text-xs border-b-2 transition whitespace-nowrap ${
+          className={`pb-3 text-sm font-bold flex items-center gap-2 transition cursor-pointer ${
             activeTab === 'students'
-              ? 'border-blue-700 text-blue-900'
-              : 'border-transparent text-slate-500 hover:text-slate-900'
+              ? 'text-blue-700 border-b-2 border-blue-700'
+              : 'text-slate-500 hover:text-slate-800'
           }`}
         >
-          <Users className="w-4 h-4" />
-          <span>Student Attendance</span>
+          <Calendar className="w-4 h-4" />
+          <span>Student Attendance Ledgers</span>
         </button>
       </div>
 
       {/* Tab Panels */}
-      <div>
-        {activeTab === 'sessions' && (
-          <CourseSessionsTab course={course} onSessionUpdated={loadCourse} />
-        )}
-        {activeTab === 'roster' && (
-          <CourseRosterTab course={course} onRosterUpdated={loadCourse} />
-        )}
-        {activeTab === 'students' && (
-          <CourseStudentsTab course={course} />
-        )}
-      </div>
+      {activeTab === 'sessions' && (
+        <CourseSessionsTab course={course} onSessionUpdated={loadCourse} />
+      )}
+
+      {activeTab === 'roster' && (
+        <CourseRosterTab course={course} onRosterUpdated={loadCourse} />
+      )}
+
+      {activeTab === 'students' && (
+        <CourseStudentsTab course={course} />
+      )}
     </div>
   );
 };

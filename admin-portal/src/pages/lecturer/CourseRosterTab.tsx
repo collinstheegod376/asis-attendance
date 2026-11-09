@@ -13,11 +13,12 @@ import {
   RefreshCw,
   Info,
 } from 'lucide-react';
-import { LecturerService, ImportRosterSummary } from '../../services/lecturerService';
-import { AppStorage } from '../../lib/storage';
+import { LecturerService } from '../../services/lecturerService';
+import { RosterService } from '../../services/rosterService';
 import { Course, CourseRoster } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { EmptyState } from '../../components/common/EmptyState';
+import { formatWATDate } from '../../lib/dateUtils';
 
 interface CourseRosterTabProps {
   course: Course;
@@ -29,21 +30,30 @@ export const CourseRosterTab: React.FC<CourseRosterTabProps> = ({ course, onRost
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [roster, setRoster] = useState<CourseRoster[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [levelFilter, setLevelFilter] = useState<string>('all');
 
   // Upload & validation states
   const [isUploading, setIsUploading] = useState(false);
   const [uploadFileName, setUploadFileName] = useState('');
-  const [parsedRows, setParsedRows] = useState<any[] | null>(null);
   const [importMode, setImportMode] = useState<'append' | 'replace'>('append');
-  const [validationSummary, setValidationSummary] = useState<ImportRosterSummary | null>(null);
+  const [validationSummary, setValidationSummary] = useState<{
+    total: number;
+    accepted: string[];
+    rejected: Array<{ row: number; matric?: string; reason: string }>;
+  } | null>(null);
   const [uploadError, setUploadError] = useState('');
   const [showSummaryModal, setShowSummaryModal] = useState(false);
 
-  const loadRoster = () => {
-    const list = AppStorage.getCourseRoster(course.id);
-    setRoster(list);
+  const loadRoster = async () => {
+    setLoading(true);
+    try {
+      const list = await LecturerService.getCourseRoster(course.id);
+      setRoster(list);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -59,30 +69,33 @@ export const CourseRosterTab: React.FC<CourseRosterTabProps> = ({ course, onRost
     setIsUploading(true);
 
     try {
-      const rows = await LecturerService.parseSpreadsheetFile(file);
+      const rows = await RosterService.parseSpreadsheetFile(file);
       if (!rows || rows.length === 0) {
         setUploadError('The selected spreadsheet appears to be empty or has no data rows.');
         setIsUploading(false);
         return;
       }
 
-      setParsedRows(rows);
+      // Fix QA-12 / PERF-16: Call server Edge Function /api/import-roster with JWT
+      const result = await RosterService.importCourseRoster(course.id, rows, importMode);
 
-      // Perform dry-run validation against students_master
-      if (!user) return;
-      const summary = LecturerService.importCourseRoster(
-        course.id,
-        rows,
-        importMode,
-        { id: user.id, name: user.name }
-      );
+      if (!result.success && result.error) {
+        setUploadError(result.error);
+        setIsUploading(false);
+        return;
+      }
 
-      setValidationSummary(summary);
+      setValidationSummary({
+        total: rows.length,
+        accepted: result.accepted,
+        rejected: result.rejected,
+      });
+
       setShowSummaryModal(true);
-      loadRoster();
+      await loadRoster();
       onRosterUpdated();
     } catch (err: any) {
-      setUploadError(err.message || 'Failed to read spreadsheet.');
+      setUploadError(err.message || 'Failed to process roster upload.');
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) {
@@ -92,23 +105,25 @@ export const CourseRosterTab: React.FC<CourseRosterTabProps> = ({ course, onRost
   };
 
   const handleDownloadRejections = () => {
-    if (!validationSummary || validationSummary.rejectedRows.length === 0) return;
-    LecturerService.downloadRejectedRowsCSV(course.code, validationSummary.rejectedRows);
+    if (!validationSummary || validationSummary.rejected.length === 0) return;
+    RosterService.downloadRejectedRowsFile(course.code, validationSummary.rejected);
   };
 
-  const handleRemoveStudent = (rosterId: string, studentName: string) => {
+  const handleRemoveStudent = async (rosterId: string, studentName: string) => {
     if (!user) return;
     if (window.confirm(`Are you sure you want to remove ${studentName} from this course roster?`)) {
-      const res = LecturerService.removeStudentFromRoster(rosterId, { id: user.id, name: user.name });
+      const res = await LecturerService.removeStudentFromRoster(rosterId, { id: user.id, name: user.name });
       if (res.success) {
-        loadRoster();
+        await loadRoster();
         onRosterUpdated();
+      } else {
+        alert(res.error || 'Failed to remove student.');
       }
     }
   };
 
   const filteredRoster = roster.filter(student => {
-    const matchesSearch = 
+    const matchesSearch =
       student.matric_no.toLowerCase().includes(searchQuery.toLowerCase()) ||
       student.student_name.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesLevel = levelFilter === 'all' || String(student.level) === levelFilter;
@@ -119,161 +134,140 @@ export const CourseRosterTab: React.FC<CourseRosterTabProps> = ({ course, onRost
     <div className="space-y-6">
       {/* Upload Zone & Mode Selector Card */}
       <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-slate-100">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
           <div>
             <h3 className="text-base font-bold text-slate-900 tracking-tight flex items-center gap-2">
               <UploadCloud className="w-5 h-5 text-blue-700" />
-              <span>Course Roster Spreadsheet Upload</span>
+              <span>Import Official Course Roster</span>
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              Upload class roster (.xlsx, .xls, .csv). Each student matric number is strictly validated against the official university master database.
+              Upload class list (.xlsx, .xls, .csv). Unknown matric numbers not in students_master are strictly rejected.
             </p>
           </div>
 
-          {/* Import Mode Radio Switch */}
-          <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl text-xs font-semibold self-start sm:self-auto border border-slate-200">
-            <span className="text-[11px] text-slate-500 px-2 uppercase tracking-wider font-bold">Mode:</span>
-            <button
-              onClick={() => setImportMode('append')}
-              className={`px-3 py-1.5 rounded-lg transition ${
-                importMode === 'append'
-                  ? 'bg-white text-blue-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Append New
-            </button>
-            <button
-              onClick={() => setImportMode('replace')}
-              className={`px-3 py-1.5 rounded-lg transition ${
-                importMode === 'replace'
-                  ? 'bg-rose-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Replace All
-            </button>
+          <div className="flex items-center gap-3">
+            {/* Import Mode Radio Switcher */}
+            <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => setImportMode('append')}
+                className={`px-3 py-1.5 rounded-lg transition cursor-pointer ${
+                  importMode === 'append'
+                    ? 'bg-white text-blue-900 shadow-2xs font-bold'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Append to Roster
+              </button>
+              <button
+                type="button"
+                onClick={() => setImportMode('replace')}
+                className={`px-3 py-1.5 rounded-lg transition cursor-pointer ${
+                  importMode === 'replace'
+                    ? 'bg-rose-600 text-white shadow-2xs font-bold'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Replace Entire Roster
+              </button>
+            </div>
           </div>
         </div>
 
         {uploadError && (
-          <div className="mt-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium flex items-center gap-2">
+          <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium flex items-center gap-2">
             <AlertCircle className="w-4 h-4 shrink-0" />
             <span>{uploadError}</span>
           </div>
         )}
 
-        {/* Drag & Drop File Upload Trigger */}
-        <div className="mt-5 flex flex-col sm:flex-row items-center justify-between gap-4 p-6 border-2 border-dashed border-blue-200 bg-blue-50/30 rounded-2xl">
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center shrink-0">
-              <FileSpreadsheet className="w-6 h-6" />
-            </div>
-            <div>
-              <p className="text-sm font-bold text-slate-900">
-                Upload Eligible Students (.xlsx, .xls, .csv)
-              </p>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Columns accepted: <code className="font-mono bg-blue-100/60 px-1 py-0.5 rounded text-blue-900">matric_no</code> (or <code className="font-mono bg-blue-100/60 px-1 py-0.5 rounded text-blue-900">matric_no, surname, first_name, program, level</code>)
-              </p>
-            </div>
-          </div>
+        {/* Drag/Drop Clickable Container */}
+        <div
+          onClick={() => {
+            if (course.status !== 'archived' && !isUploading) {
+              fileInputRef.current?.click();
+            }
+          }}
+          className={`border-2 border-dashed rounded-2xl p-6 text-center transition cursor-pointer ${
+            course.status === 'archived'
+              ? 'border-slate-200 bg-slate-50 cursor-not-allowed opacity-60'
+              : isUploading
+              ? 'border-blue-400 bg-blue-50/50'
+              : 'border-slate-300 hover:border-blue-500 bg-slate-50/50 hover:bg-blue-50/20'
+          }`}
+        >
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileChange}
+            accept=".xlsx,.xls,.csv"
+            className="hidden"
+            disabled={course.status === 'archived' || isUploading}
+          />
 
-          <div className="flex items-center gap-3">
-            <input
-              type="file"
-              ref={fileInputRef}
-              accept=".xlsx,.xls,.csv"
-              onChange={handleFileChange}
-              className="hidden"
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isUploading}
-              className="px-5 py-2.5 rounded-xl bg-blue-700 hover:bg-blue-800 active:bg-blue-900 text-white font-bold text-xs transition shadow-xs flex items-center gap-2"
-            >
-              {isUploading ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Validating Roster...</span>
-                </>
-              ) : (
-                <>
-                  <UploadCloud className="w-4 h-4" />
-                  <span>Select Spreadsheet</span>
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* Informational Guidance */}
-        <div className="mt-4 flex items-start gap-2 text-xs text-slate-500 bg-slate-50 p-3 rounded-xl border border-slate-100">
-          <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-          <span>
-            <strong>Attendance Gatekeeper Policy:</strong> Only students included in this course roster who also exist in the university's master register are qualified to submit attendance during lecture sessions.
-          </span>
+          <FileSpreadsheet className="w-10 h-10 text-blue-700 mx-auto mb-2" />
+          <p className="text-sm font-bold text-slate-800">
+            {isUploading ? 'Validating Against University Directory...' : 'Click to Browse Roster Spreadsheet'}
+          </p>
+          <p className="text-xs text-slate-500 mt-1">
+            Accepts Excel (.xlsx, .xls) and CSV. Requires header column: <code className="bg-white px-1.5 py-0.5 rounded border border-slate-200 text-blue-900 font-mono">matric_no</code>
+          </p>
         </div>
       </div>
 
-      {/* Roster Table Section */}
-      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
-        {/* Table controls */}
-        <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+      {/* Roster Table Card */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+        {/* Table Controls */}
+        <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-              <Users className="w-4 h-4 text-blue-700" />
-              <span>Enrolled Students</span>
-            </h4>
-            <span className="px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 text-xs font-bold border border-blue-100">
-              {roster.length}
+            <span className="font-bold text-slate-900 text-sm">Enrolled Students</span>
+            <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 text-xs font-mono font-bold">
+              {roster.length} Total
             </span>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
             {/* Search */}
-            <div className="relative flex-1 sm:w-64">
-              <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
-                placeholder="Search matric or name..."
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-3 py-1.5 rounded-xl border border-slate-200 text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+                placeholder="Search matric or name..."
+                className="pl-9 pr-3 py-1.5 text-xs rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-600 w-48 sm:w-60"
               />
             </div>
 
-            {/* Level filter */}
-            <div className="flex items-center gap-1.5 text-xs text-slate-600">
-              <Filter className="w-3.5 h-3.5 text-slate-400" />
-              <select
-                value={levelFilter}
-                onChange={e => setLevelFilter(e.target.value)}
-                className="px-2.5 py-1.5 rounded-xl border border-slate-200 text-xs font-medium bg-white focus:outline-hidden"
-              >
-                <option value="all">All Levels</option>
-                <option value="100">100 Level</option>
-                <option value="200">200 Level</option>
-                <option value="300">300 Level</option>
-                <option value="400">400 Level</option>
-                <option value="500">500 Level</option>
-              </select>
-            </div>
+            {/* Level Filter */}
+            <select
+              value={levelFilter}
+              onChange={e => setLevelFilter(e.target.value)}
+              className="py-1.5 px-3 text-xs rounded-xl border border-slate-200 bg-slate-50 text-slate-700 font-medium focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+            >
+              <option value="all">All Levels</option>
+              <option value="100">100 Level</option>
+              <option value="200">200 Level</option>
+              <option value="300">300 Level</option>
+              <option value="400">400 Level</option>
+              <option value="500">500 Level</option>
+            </select>
           </div>
         </div>
 
-        {/* Table */}
-        {roster.length === 0 ? (
-          <div className="p-8">
-            <EmptyState
-              icon={Users}
-              title="No Students on Course Roster"
-              description="This course does not have an active roster yet. Click 'Select Spreadsheet' above to import eligible students from an Excel or CSV file."
-            />
+        {/* Table Content */}
+        {loading ? (
+          <div className="p-12 text-center text-slate-500">
+            <div className="w-8 h-8 border-3 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+            <p className="text-xs">Loading course roster...</p>
           </div>
         ) : filteredRoster.length === 0 ? (
-          <div className="p-8 text-center text-slate-400 text-xs">
-            No enrolled students match your search filter "{searchQuery}".
+          <div className="p-10">
+            <EmptyState
+              icon={Users}
+              title="No Students Enrolled"
+              description="Upload your course roster above to enroll students allowed to attend and sign attendance."
+            />
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -290,38 +284,35 @@ export const CourseRosterTab: React.FC<CourseRosterTabProps> = ({ course, onRost
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredRoster.map((student, idx) => {
-                  const d = new Date(student.uploaded_at);
-                  const enrolledDate = d.toLocaleDateString('en-GB', { timeZone: 'Africa/Lagos' });
-
-                  return (
-                    <tr key={student.id} className="hover:bg-blue-50/30 transition">
-                      <td className="px-5 py-3.5 text-slate-400 font-mono text-xs">{idx + 1}</td>
-                      <td className="px-5 py-3.5 font-mono font-bold text-blue-900">
-                        {student.matric_no}
-                      </td>
-                      <td className="px-5 py-3.5 font-bold text-slate-800">
-                        {student.student_name}
-                      </td>
-                      <td className="px-5 py-3.5 text-slate-600">{student.program || 'N/A'}</td>
-                      <td className="px-5 py-3.5">
-                        <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 font-mono text-xs font-semibold">
-                          {student.level || '100'}L
-                        </span>
-                      </td>
-                      <td className="px-5 py-3.5 text-slate-500 whitespace-nowrap">{enrolledDate}</td>
-                      <td className="px-5 py-3.5 text-right">
-                        <button
-                          onClick={() => handleRemoveStudent(student.id, student.student_name)}
-                          className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition"
-                          title="Remove student from course roster"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {filteredRoster.map((student, idx) => (
+                  <tr key={student.id} className="hover:bg-blue-50/30 transition">
+                    <td className="px-5 py-3.5 text-slate-400 font-mono text-xs">{idx + 1}</td>
+                    <td className="px-5 py-3.5 font-mono font-bold text-blue-900">
+                      {student.matric_no}
+                    </td>
+                    <td className="px-5 py-3.5 font-bold text-slate-800">
+                      {student.student_name}
+                    </td>
+                    <td className="px-5 py-3.5 text-slate-600">{student.program || 'N/A'}</td>
+                    <td className="px-5 py-3.5">
+                      <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 font-mono text-xs font-semibold">
+                        {student.level || '100'}L
+                      </span>
+                    </td>
+                    <td className="px-5 py-3.5 text-slate-500 whitespace-nowrap">
+                      {formatWATDate(student.uploaded_at)}
+                    </td>
+                    <td className="px-5 py-3.5 text-right">
+                      <button
+                        onClick={() => handleRemoveStudent(student.id, student.student_name)}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
+                        title="Remove student from course roster"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -347,25 +338,25 @@ export const CourseRosterTab: React.FC<CourseRosterTabProps> = ({ course, onRost
               </div>
               <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-center">
                 <span className="text-[10px] uppercase font-bold text-emerald-700 block">Accepted</span>
-                <span className="text-2xl font-black text-emerald-700 font-mono">{validationSummary.accepted}</span>
+                <span className="text-2xl font-black text-emerald-700 font-mono">{validationSummary.accepted.length}</span>
               </div>
               <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-center">
                 <span className="text-[10px] uppercase font-bold text-rose-700 block">Rejected</span>
-                <span className="text-2xl font-black text-rose-700 font-mono">{validationSummary.rejected}</span>
+                <span className="text-2xl font-black text-rose-700 font-mono">{validationSummary.rejected.length}</span>
               </div>
             </div>
 
-            {/* Rejected Rows Preview & Download */}
-            {validationSummary.rejected > 0 ? (
+            {/* Rejected Rows Preview & Download (Fix QA-12 / PERF-16) */}
+            {validationSummary.rejected.length > 0 ? (
               <div className="flex-1 overflow-hidden flex flex-col border border-rose-100 rounded-xl bg-rose-50/30 p-3 mb-4">
                 <div className="flex items-center justify-between pb-2 mb-2 border-b border-rose-100">
                   <span className="text-xs font-bold text-rose-800 flex items-center gap-1.5">
                     <AlertCircle className="w-4 h-4 text-rose-600" />
-                    <span>Rejected Rows Breakdown ({validationSummary.rejected})</span>
+                    <span>Rejected Rows Breakdown ({validationSummary.rejected.length})</span>
                   </span>
                   <button
                     onClick={handleDownloadRejections}
-                    className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-rose-700 bg-white hover:bg-rose-50 border border-rose-200 rounded-lg transition shadow-2xs"
+                    className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-rose-700 bg-white hover:bg-rose-50 border border-rose-200 rounded-lg transition shadow-2xs cursor-pointer"
                   >
                     <Download className="w-3.5 h-3.5" />
                     <span>Download Rejections (.xlsx)</span>
@@ -373,11 +364,11 @@ export const CourseRosterTab: React.FC<CourseRosterTabProps> = ({ course, onRost
                 </div>
 
                 <div className="overflow-y-auto max-h-48 divide-y divide-rose-100 text-xs">
-                  {validationSummary.rejectedRows.map((r, i) => (
+                  {validationSummary.rejected.map((r, i) => (
                     <div key={i} className="py-2 flex items-start justify-between gap-3">
                       <div>
                         <span className="font-mono font-bold text-rose-900 mr-2">
-                          Row {r.row}: {r.matric_no || '[Empty Matric]'}
+                          Row {r.row}: {r.matric || '[Empty Matric]'}
                         </span>
                         <p className="text-[11px] text-rose-700 mt-0.5">{r.reason}</p>
                       </div>
@@ -395,7 +386,7 @@ export const CourseRosterTab: React.FC<CourseRosterTabProps> = ({ course, onRost
             <div className="mt-auto pt-3 border-t border-slate-100 flex items-center justify-end gap-3">
               <button
                 onClick={() => setShowSummaryModal(false)}
-                className="px-5 py-2.5 text-xs font-bold text-white bg-blue-700 hover:bg-blue-800 rounded-xl transition shadow-xs"
+                className="px-5 py-2.5 text-xs font-bold text-white bg-blue-700 hover:bg-blue-800 rounded-xl transition shadow-xs cursor-pointer"
               >
                 Done
               </button>

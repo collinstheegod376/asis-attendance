@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { AppStorage } from '../../lib/storage';
+import { AdminService } from '../../services/adminService';
 import { isSupabaseConfigured } from '../../lib/supabase';
+import { SystemSettings, AuditLog } from '../../types';
 import {
   Users,
   BookOpen,
@@ -21,15 +22,56 @@ import {
 import { EmptyState } from '../../components/common/EmptyState';
 
 export const AdminHomePage: React.FC = () => {
-  const [metrics, setMetrics] = useState(AppStorage.getAnalyticsOverview());
-  const [settings, setSettings] = useState(AppStorage.getSettings());
-  const [recentAudits, setRecentAudits] = useState(AppStorage.getAuditLogs().slice(0, 5));
+  const [metrics, setMetrics] = useState({
+    totalLecturers: 0,
+    activeLecturers: 0,
+    totalCourses: 0,
+    activeCourses: 0,
+    totalSessions: 0,
+    totalAttendance: 0,
+    presentCount: 0,
+    lateCount: 0,
+    totalStudentsMaster: 0,
+  });
+  const [settings, setSettings] = useState<SystemSettings>({
+    location_mode: 'evidence_only',
+    campus_center_lat: 6.2235,
+    campus_center_lng: 6.6180,
+    campus_radius_m: 1500,
+    location_accuracy_threshold_m: 50,
+    default_session_duration_minutes: 60,
+    max_session_duration_minutes: 180,
+    selfie_retention_days: 90,
+    grace_minutes: 15,
+    max_active_courses_per_lecturer: 9,
+    rate_limit_token_per_minute: 60,
+    rate_limit_matric_per_minute: 30,
+    updated_at: new Date().toISOString(),
+  });
+  const [recentAudits, setRecentAudits] = useState<AuditLog[]>([]);
 
   useEffect(() => {
-    // Refresh overview data
-    setMetrics(AppStorage.getAnalyticsOverview());
-    setSettings(AppStorage.getSettings());
-    setRecentAudits(AppStorage.getAuditLogs().slice(0, 5));
+    let isMounted = true;
+    async function loadData() {
+      try {
+        const [overview, sysSettings, audits] = await Promise.all([
+          AdminService.getAnalyticsOverview(),
+          AdminService.getSettings(),
+          AdminService.getAuditLogs(5),
+        ]);
+        if (isMounted) {
+          setMetrics(overview);
+          setSettings(sysSettings);
+          setRecentAudits(audits.slice(0, 5));
+        }
+      } catch (err) {
+        console.error('Failed to load admin overview:', err);
+      }
+    }
+    loadData();
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   return (
@@ -339,7 +381,7 @@ export const AdminHomePage: React.FC = () => {
           />
         ) : (
           <div className="divide-y divide-slate-100 overflow-x-auto">
-            {recentAudits.map(log => {
+            {recentAudits.map((log: AuditLog) => {
               const actorDisplay = log.actor_name || log.actor_role || 'System';
               const initial = actorDisplay.charAt(0).toUpperCase();
               return (
