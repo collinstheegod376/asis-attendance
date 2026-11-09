@@ -25,44 +25,49 @@ import { DeviceInUseBlockPage } from './pages/block/DeviceInUseBlockPage';
 import { SharedDeviceBlockPage } from './pages/block/SharedDeviceBlockPage';
 import { ContactAdminBlockPage } from './pages/block/ContactAdminBlockPage';
 
+// Offline Guard
+import { OfflineGuard } from './components/OfflineGuard';
+
 export function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        {/* Public landing */}
-        <Route path="/" element={<LandingPage />} />
+      <OfflineGuard>
+        <Routes>
+          {/* Public landing */}
+          <Route path="/" element={<LandingPage />} />
 
-        {/* Server token validation entry */}
-        <Route path="/join/:token" element={<JoinTokenPage />} />
+          {/* Server token validation entry */}
+          <Route path="/join/:token" element={<JoinTokenPage />} />
 
-        {/* Attendance flow steps */}
-        <Route path="/attend/identity" element={<AttendIdentityPage />} />
-        <Route path="/attend/location" element={<AttendLocationPage />} />
-        <Route path="/attend/selfie" element={<AttendSelfiePage />} />
-        <Route path="/attend/video" element={<AttendVideoPage />} />
-        <Route path="/attend/confirmation" element={<AttendConfirmationPage />} />
+          {/* Attendance flow steps */}
+          <Route path="/attend/identity" element={<AttendIdentityPage />} />
+          <Route path="/attend/location" element={<AttendLocationPage />} />
+          <Route path="/attend/selfie" element={<AttendSelfiePage />} />
+          <Route path="/attend/video" element={<AttendVideoPage />} />
+          <Route path="/attend/confirmation" element={<AttendConfirmationPage />} />
 
-        {/* Dedicated Option 2 Strict Device Binding Block screens */}
-        <Route path="/block/incognito" element={<IncognitoBlockPage />} />
-        <Route path="/block/new-device" element={<NewDeviceBlockPage />} />
-        <Route path="/block/device-in-use" element={<DeviceInUseBlockPage />} />
-        <Route path="/block/shared-device" element={<SharedDeviceBlockPage />} />
-        <Route path="/block/contact-admin" element={<ContactAdminBlockPage />} />
+          {/* Dedicated Option 2 Strict Device Binding Block screens */}
+          <Route path="/block/incognito" element={<IncognitoBlockPage />} />
+          <Route path="/block/new-device" element={<NewDeviceBlockPage />} />
+          <Route path="/block/device-in-use" element={<DeviceInUseBlockPage />} />
+          <Route path="/block/shared-device" element={<SharedDeviceBlockPage />} />
+          <Route path="/block/contact-admin" element={<ContactAdminBlockPage />} />
 
-        {/* Status & Error routes */}
-        <Route path="/expired" element={<ExpiredPage />} />
-        <Route path="/invalid" element={<InvalidPage />} />
-        <Route path="/not-started" element={<NotStartedPage />} />
-        <Route path="/closed" element={<ClosedPage />} />
-        <Route path="/already-signed" element={<AlreadySignedPage />} />
-        <Route path="/not-enrolled" element={<NotEnrolledPage />} />
-        <Route path="/unsupported" element={<UnsupportedPage />} />
-        <Route path="/offline" element={<OfflinePage />} />
-        <Route path="/privacy" element={<PrivacyPage />} />
+          {/* Status & Error routes */}
+          <Route path="/expired" element={<ExpiredPage />} />
+          <Route path="/invalid" element={<InvalidPage />} />
+          <Route path="/not-started" element={<NotStartedPage />} />
+          <Route path="/closed" element={<ClosedPage />} />
+          <Route path="/already-signed" element={<AlreadySignedPage />} />
+          <Route path="/not-enrolled" element={<NotEnrolledPage />} />
+          <Route path="/unsupported" element={<UnsupportedPage />} />
+          <Route path="/offline" element={<OfflinePage />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
 
-        {/* Catch-all */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+          {/* Catch-all */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </OfflineGuard>
     </BrowserRouter>
   );
 }

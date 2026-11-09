@@ -1,7 +1,7 @@
 import React from 'react';
 import { Check } from 'lucide-react';
 
-export type StepKey = 'identity' | 'selfie' | 'submit';
+export type StepKey = 'identity' | 'location' | 'selfie' | 'submit';
 
 interface StepperProps {
   currentStep: StepKey;
@@ -10,25 +10,30 @@ interface StepperProps {
 export const Stepper: React.FC<StepperProps> = ({ currentStep }) => {
   const steps: { key: StepKey; label: string; num: number }[] = [
     { key: 'identity', label: 'Details', num: 1 },
-    { key: 'selfie', label: 'Selfie', num: 2 },
-    { key: 'submit', label: 'Submit', num: 3 },
+    { key: 'location', label: 'Location', num: 2 },
+    { key: 'selfie', label: 'Selfie', num: 3 },
+    { key: 'submit', label: 'Submit', num: 4 },
   ];
 
   const getStepIndex = (key: StepKey) => {
     switch (key) {
       case 'identity':
         return 0;
-      case 'selfie':
+      case 'location':
         return 1;
-      case 'submit':
+      case 'selfie':
         return 2;
+      case 'submit':
+        return 3;
+      default:
+        return 0;
     }
   };
 
   const currentIndex = getStepIndex(currentStep);
 
   return (
-    <div className="w-full flex items-center justify-between px-2 py-3 mb-4">
+    <div className="w-full flex items-center justify-between px-1 py-3 mb-3">
       {steps.map((step, idx) => {
         const isActive = idx === currentIndex;
         const isCompleted = idx < currentIndex;
@@ -36,7 +41,7 @@ export const Stepper: React.FC<StepperProps> = ({ currentStep }) => {
         return (
           <React.Fragment key={step.key}>
             <div
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-300 ${
+              className={`flex items-center gap-1 sm:gap-1.5 px-2.5 py-1.5 rounded-full text-[11px] sm:text-xs font-semibold transition-all duration-300 ${
                 isActive
                   ? 'bg-blue-800 text-white shadow-sm shadow-blue-900/20 ring-2 ring-blue-600/30'
                   : isCompleted
@@ -45,7 +50,7 @@ export const Stepper: React.FC<StepperProps> = ({ currentStep }) => {
               }`}
             >
               <div
-                className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                className={`w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full flex items-center justify-center text-[9px] sm:text-[10px] font-bold ${
                   isActive
                     ? 'bg-white text-blue-900'
                     : isCompleted
@@ -60,7 +65,7 @@ export const Stepper: React.FC<StepperProps> = ({ currentStep }) => {
 
             {idx < steps.length - 1 && (
               <div
-                className={`flex-1 h-0.5 mx-1.5 transition-colors duration-300 ${
+                className={`flex-1 h-0.5 mx-1 transition-colors duration-300 ${
                   idx < currentIndex ? 'bg-blue-500' : 'bg-slate-200'
                 }`}
               />

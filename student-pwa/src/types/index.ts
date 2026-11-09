@@ -27,8 +27,10 @@ export interface AttemptSessionState {
   attempt_id: string;
   attempt_token: string;
   raw_token: string;
-  session: SessionData;
+  session_id?: string;
+  session?: SessionData;
   student?: StudentData;
+  idempotency_key?: string;
   location?: {
     latitude: number;
     longitude: number;

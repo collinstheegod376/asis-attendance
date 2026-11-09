@@ -1,11 +1,31 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { CheckCircle2, UserCheck, AlertCircle, ArrowRight, Edit3, Loader2 } from 'lucide-react';
+import {
+  UserCheck,
+  AlertCircle,
+  ArrowRight,
+  Edit3,
+  Loader2,
+  ShieldCheck,
+  Smartphone,
+  CheckCircle2,
+} from 'lucide-react';
 import { Header } from '../components/Header';
-import { getAttemptState, updateAttemptStudent, updateAttemptFingerprint } from '../lib/sessionStorage';
-import { normalizeMatric, checkDeviceBinding, bindDeviceToMatric, getOrCreateDeviceId } from '../lib/crypto';
+import {
+  getAttemptState,
+  updateAttemptStudent,
+  updateAttemptFingerprint,
+  clearAttemptState,
+} from '../lib/attemptState';
+import {
+  normalizeMatric,
+  checkDeviceBinding,
+  bindDeviceToMatric,
+  getOrCreateDeviceId,
+} from '../lib/crypto';
+import type { ClientDeviceBindingHint } from '../lib/crypto';
 import { generateDeviceFingerprint, detectIncognito } from '../lib/deviceFingerprint';
-import { attendanceApi } from '../lib/supabase';
+import { attendanceService, ApiError } from '../lib/attendanceService';
 import type { StudentData } from '../types';
 
 export const AttendIdentityPage: React.FC = () => {
@@ -14,12 +34,35 @@ export const AttendIdentityPage: React.FC = () => {
 
   const [matricInput, setMatricInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [bindingInProgress, setBindingInProgress] = useState(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [foundStudent, setFoundStudent] = useState<StudentData | null>(null);
   const [fingerprintHash, setFingerprintHash] = useState<string>('');
   const [isIncognitoState, setIsIncognitoState] = useState<boolean>(false);
+  const [bindingHint, setBindingHint] = useState<ClientDeviceBindingHint | null>(null);
 
-  // Guard & Gate 0 / Client Device Fingerprint Initialization
+  // Rate-limiting state
+  const [rateLimitedUntil, setRateLimitedUntil] = useState<number | null>(null);
+  const [rateLimitSeconds, setRateLimitSeconds] = useState<number>(0);
+
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastLookedUpMatricRef = useRef<string>('');
+
+  // Rate-limit countdown
+  useEffect(() => {
+    if (!rateLimitedUntil) return;
+    const interval = setInterval(() => {
+      const remaining = Math.max(0, Math.ceil((rateLimitedUntil - Date.now()) / 1000));
+      setRateLimitSeconds(remaining);
+      if (remaining <= 0) {
+        setRateLimitedUntil(null);
+        setErrorBanner(null);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [rateLimitedUntil]);
+
+  // Step Guard & Security Initialization
   useEffect(() => {
     if (!attempt || !attempt.attempt_id || !attempt.attempt_token) {
       navigate('/', { replace: true });
@@ -40,16 +83,17 @@ export const AttendIdentityPage: React.FC = () => {
       setIsIncognitoState(incognito);
 
       if (incognito) {
+        clearAttemptState();
         navigate('/block/incognito?ref=BIND-205', { replace: true });
         return;
       }
 
-      // Option 2 Device Fingerprinting (Fail-closed)
+      // Device Fingerprinting (Fail-closed)
       const fp = await generateDeviceFingerprint();
       if (!active) return;
 
       if (!fp.success || !fp.hash) {
-        // Fail-closed to BIND-200. Never silently allow!
+        clearAttemptState();
         navigate(
           `/block/contact-admin?ref=BIND-200&reason=${encodeURIComponent(
             'Device fingerprint generation failed or was blocked by browser privacy settings.'
@@ -70,169 +114,226 @@ export const AttendIdentityPage: React.FC = () => {
     };
   }, [attempt, navigate]);
 
+  // Perform matric lookup
+  const performLookup = useCallback(
+    async (matricToQuery: string) => {
+      const cleanMatric = normalizeMatric(matricToQuery);
+      if (!cleanMatric || cleanMatric.length < 5 || !attempt?.attempt_token) {
+        return;
+      }
+
+      if (lastLookedUpMatricRef.current === cleanMatric && foundStudent) {
+        return;
+      }
+
+      setErrorBanner(null);
+      setLoading(true);
+
+      try {
+        const response = await attendanceService.lookupMatric(attempt.attempt_token, cleanMatric);
+        lastLookedUpMatricRef.current = cleanMatric;
+
+        // Map to student data
+        const student: StudentData = {
+          id: response.student_id,
+          matric_no: response.matric_no,
+          surname: response.full_name.split(' ')[0] || response.full_name,
+          first_name: response.full_name.split(' ').slice(1).join(' ') || '',
+          middle_name: null,
+          program: response.program,
+          level: response.level,
+        };
+
+        setFoundStudent(student);
+
+        // Check local storage binding UX hint
+        const hint = await checkDeviceBinding(cleanMatric);
+        setBindingHint(hint);
+      } catch (err: unknown) {
+        console.error('Lookup error:', err);
+        if (err instanceof ApiError) {
+          if (err.status === 429) {
+            setRateLimitedUntil(Date.now() + 60000);
+            setRateLimitSeconds(60);
+            setErrorBanner('Too many attempts. Please wait 60 seconds.');
+            return;
+          }
+
+          if (err.code === 'NOT_ELIGIBLE' || err.status === 404) {
+            clearAttemptState();
+            navigate('/not-enrolled', { replace: true });
+            return;
+          }
+
+          if (err.code === 'ALREADY_SIGNED' || err.status === 409) {
+            clearAttemptState();
+            navigate('/already-signed', { replace: true });
+            return;
+          }
+
+          if (err.code === 'ATTEMPT_EXPIRED' || err.status === 410) {
+            clearAttemptState();
+            navigate('/expired', { replace: true });
+            return;
+          }
+
+          setErrorBanner(err.message || 'Matric lookup failed. Please check the number.');
+        } else {
+          setErrorBanner('Could not reach server to verify matric. Check connection.');
+        }
+      } finally {
+        setLoading(false);
+      }
+    },
+    [attempt, foundStudent, navigate]
+  );
+
+  // Debounce matric input change (400ms)
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = normalizeMatric(e.target.value);
     setMatricInput(val);
     setErrorBanner(null);
+    setFoundStudent(null);
+    setBindingHint(null);
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+
+    if (val.length >= 5) {
+      debounceTimerRef.current = setTimeout(() => {
+        performLookup(val);
+      }, 400);
+    }
   };
 
-  const handleLookup = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!matricInput.trim() || loading || !attempt) return;
-
+  // "Edit" clears the displayed card and allows retyping, NO binding
+  const handleEdit = () => {
+    setFoundStudent(null);
+    setBindingHint(null);
+    lastLookedUpMatricRef.current = '';
     setErrorBanner(null);
-    setLoading(true);
+  };
+
+  // "Continue to Location Check" triggers /api/device-check (FIRST time bind is attempted)
+  const handleContinue = async () => {
+    if (!foundStudent || !attempt?.attempt_token || bindingInProgress) return;
+
+    setBindingInProgress(true);
+    setErrorBanner(null);
 
     try {
-      const cleanMatric = normalizeMatric(matricInput);
-
-      // Gate 0 Re-check before lookup
-      if (isIncognitoState) {
-        navigate('/block/incognito?ref=BIND-205');
+      // Re-verify incognito signal
+      const isPrivate = isIncognitoState || (await detectIncognito());
+      if (isPrivate) {
+        clearAttemptState();
+        navigate('/block/incognito?ref=BIND-205', { replace: true });
         return;
       }
 
-      // Fail-closed if fingerprint hash is missing
+      // Ensure fingerprint hash
       let activeFpHash = fingerprintHash;
       if (!activeFpHash) {
         const fp = await generateDeviceFingerprint();
         if (!fp.success || !fp.hash) {
-          navigate(
-            `/block/contact-admin?ref=BIND-200&reason=${encodeURIComponent(
-              'Device fingerprint generation failed or was blocked by browser privacy settings.'
-            )}`
-          );
+          clearAttemptState();
+          navigate('/block/contact-admin?ref=BIND-200', { replace: true });
           return;
         }
         activeFpHash = fp.hash;
         setFingerprintHash(fp.hash);
-        updateAttemptFingerprint(fp.hash, isIncognitoState);
+        updateAttemptFingerprint(fp.hash, isPrivate);
       }
 
-      // Gate 1b: Soft client localStorage device check
-      const softCheck = await checkDeviceBinding(cleanMatric);
-      if (!softCheck.allowed) {
-        setErrorBanner(softCheck.message || 'This device is bound to another student.');
-        setLoading(false);
+      const deviceId = getOrCreateDeviceId();
+
+      // Call authoritative backend /api/device-check
+      const deviceCheck = await attendanceService.checkDevice({
+        attemptToken: attempt.attempt_token,
+        studentId: foundStudent.id,
+        fingerprint: activeFpHash,
+        localDeviceId: deviceId,
+        incognitoSignal: isPrivate,
+      });
+
+      const ref = deviceCheck.reference_code || 'BIND-204';
+      const refEncoded = encodeURIComponent(ref);
+
+      // Handle server device check response
+      if (deviceCheck.action === 'OK') {
+        // Success: write localStorage binding (post-confirmation only!)
+        await bindDeviceToMatric(foundStudent.matric_no);
+        updateAttemptStudent(foundStudent);
+        updateAttemptFingerprint(activeFpHash, isPrivate);
+
+        // Advance to location check
+        navigate('/attend/location', { replace: false });
         return;
       }
 
-      // Call backend matric lookup
-      const deviceId = getOrCreateDeviceId();
-      const response: any = await attendanceApi.lookupMatric(
-        attempt.attempt_id,
-        attempt.attempt_token,
-        cleanMatric,
-        deviceId
-      );
+      // Clear attempt state on terminal security blocks
+      clearAttemptState();
 
-      if (!response || !response.success) {
-        const err = response?.error;
-        if (err === 'NOT_ON_ROSTER' || err === 'STUDENT_NOT_FOUND') {
-          navigate('/not-enrolled');
-          return;
-        } else if (err === 'ALREADY_SIGNED') {
-          if (response.student) {
-            updateAttemptStudent(response.student);
-          }
-          navigate('/already-signed');
-          return;
-        } else if (err === 'DEVICE_BOUND_TO_ANOTHER_MATRIC') {
-          navigate('/block/device-in-use?ref=BIND-202');
-          return;
-        } else if (err === 'SESSION_EXPIRED' || err === 'ATTEMPT_EXPIRED') {
-          navigate('/expired');
-          return;
-        } else {
-          setErrorBanner(response?.message || 'Matric lookup failed. Please check the number.');
-          setLoading(false);
+      if (ref.startsWith('BIND-205') || deviceCheck.action === 'OPEN_NORMAL_BROWSER') {
+        navigate(`/block/incognito?ref=${refEncoded}`, { replace: true });
+        return;
+      }
+
+      if (ref.startsWith('BIND-201')) {
+        navigate(`/block/new-device?ref=${refEncoded}`, { replace: true });
+        return;
+      }
+
+      if (ref.startsWith('BIND-202')) {
+        navigate(`/block/device-in-use?ref=${refEncoded}`, { replace: true });
+        return;
+      }
+
+      if (ref.startsWith('BIND-203')) {
+        navigate(`/block/shared-device?ref=${refEncoded}`, { replace: true });
+        return;
+      }
+
+      // Default for BIND-204 and other CONTACT_ADMIN codes
+      navigate(`/block/contact-admin?ref=${refEncoded}`, { replace: true });
+    } catch (err: unknown) {
+      console.error('Device check error:', err);
+      if (err instanceof ApiError) {
+        const ref = err.data?.reference_code || 'BIND-204';
+        const refEncoded = encodeURIComponent(ref);
+
+        if (ref.startsWith('BIND-201')) {
+          clearAttemptState();
+          navigate(`/block/new-device?ref=${refEncoded}`, { replace: true });
           return;
         }
-      }
-
-      // Student record found
-      const student: StudentData = response.student;
-
-      // Gate 1: Strict Server-Side Device Verification Check
-      const deviceCheck = await attendanceApi.checkDevice(
-        student.id,
-        activeFpHash,
-        deviceId,
-        isIncognitoState
-      );
-
-      // Handle Device Check Results based on Option 2 Spec
-      if (deviceCheck.action === 'OPEN_NORMAL_BROWSER' || deviceCheck.reference_code === 'BIND-205') {
-        navigate('/block/incognito?ref=BIND-205');
-        return;
-      }
-
-      if (
-        deviceCheck.action === 'NEW_DEVICE' ||
-        deviceCheck.reference_code === 'BIND-201' ||
-        (deviceCheck.reason && deviceCheck.reason.includes('New device detected'))
-      ) {
-        navigate('/block/new-device?ref=BIND-201');
-        return;
-      }
-
-      if (
-        deviceCheck.action === 'DEVICE_IN_USE' ||
-        deviceCheck.reference_code === 'BIND-202' ||
-        (deviceCheck.reason && deviceCheck.reason.includes('registered to another student'))
-      ) {
-        navigate('/block/device-in-use?ref=BIND-202');
-        return;
-      }
-
-      if (
-        deviceCheck.action === 'SHARED_DEVICE' ||
-        deviceCheck.reference_code === 'BIND-203' ||
-        (deviceCheck.reason && deviceCheck.reason.includes('already been used'))
-      ) {
-        navigate('/block/shared-device?ref=BIND-203');
-        return;
-      }
-
-      if (
-        deviceCheck.action === 'CONTACT_ADMIN' ||
-        deviceCheck.reference_code === 'BIND-204' ||
-        (deviceCheck.success === false && !deviceCheck.action)
-      ) {
-        const ref = deviceCheck.reference_code || 'BIND-204';
-        navigate(`/block/contact-admin?ref=${ref}`);
-        return;
-      }
-
-      // Verification Passed: Allow and bind
-      setFoundStudent(student);
-      updateAttemptStudent(student);
-      updateAttemptFingerprint(activeFpHash, isIncognitoState);
-      await bindDeviceToMatric(cleanMatric);
-    } catch (err: any) {
-      console.error('Lookup exception:', err);
-      if (!navigator.onLine) {
-        navigate('/offline');
+        if (ref.startsWith('BIND-202')) {
+          clearAttemptState();
+          navigate(`/block/device-in-use?ref=${refEncoded}`, { replace: true });
+          return;
+        }
+        if (ref.startsWith('BIND-205')) {
+          clearAttemptState();
+          navigate(`/block/incognito?ref=${refEncoded}`, { replace: true });
+          return;
+        }
+        if (err.status === 409 || err.status === 403) {
+          clearAttemptState();
+          navigate(`/block/contact-admin?ref=${refEncoded}`, { replace: true });
+          return;
+        }
+        setErrorBanner(err.message || 'Device verification could not be completed.');
       } else {
-        setErrorBanner(err.message || 'Server error verifying student.');
+        setErrorBanner('Network error connecting to verification server.');
       }
     } finally {
-      setLoading(false);
+      setBindingInProgress(false);
     }
-  };
-
-  const handleProceed = () => {
-    if (!foundStudent) return;
-    navigate('/attend/location');
-  };
-
-  const handleManualEdit = () => {
-    setFoundStudent(null);
   };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col items-center">
-      {/* Top Header with Stepper */}
+      {/* Header with Step 1 (Details) */}
       <Header
         currentStep="identity"
         courseCode={attempt?.session?.course_code}
@@ -240,137 +341,183 @@ export const AttendIdentityPage: React.FC = () => {
       />
 
       <div className="w-full max-w-sm px-4 py-3 flex-1 flex flex-col">
-        {/* Matric Input Card */}
-        <div className="w-full bg-white rounded-3xl p-5 shadow-sm border border-slate-200/80 mb-4">
-          <div className="mb-3 text-center">
-            <h2 className="text-base font-bold text-slate-900 tracking-tight">
-              Enter your Student ID
-            </h2>
-            <p className="text-xs text-slate-500 font-medium mt-0.5">
-              Type your matriculation number to get started
-            </p>
+        {/* Step Guide Card */}
+        <div className="w-full bg-white rounded-3xl p-6 shadow-sm border border-slate-200/80 mb-4">
+          <div className="w-12 h-12 rounded-2xl bg-blue-50 border border-blue-100 text-[#1E40AF] flex items-center justify-center mb-3">
+            <UserCheck className="w-6 h-6" />
           </div>
 
-          <form onSubmit={handleLookup} className="space-y-3">
-            <div>
-              <div className="relative">
-                <input
-                  type="text"
-                  autoFocus
-                  disabled={loading || !!foundStudent}
-                  value={matricInput}
-                  onChange={handleInputChange}
-                  placeholder="e.g. ADUN/FS/COM/25/001"
-                  className="w-full text-center text-base sm:text-lg font-mono font-bold tracking-wider py-3.5 px-4 bg-slate-50 border-2 border-slate-200 focus:border-[#1E40AF] focus:bg-white rounded-2xl outline-none transition-all uppercase placeholder:normal-case placeholder:font-sans placeholder:text-slate-400 placeholder:font-normal disabled:bg-slate-100 disabled:text-slate-500"
-                />
-              </div>
+          <h2 className="text-base font-bold text-slate-900 tracking-tight mb-1">
+            Student Identification
+          </h2>
+          <p className="text-xs text-slate-500 mb-5">
+            Type your matriculation number to verify enrollment
+          </p>
 
-              {/* Digit counter */}
-              <div className="flex items-center justify-between px-1 mt-1.5 text-[11px] text-slate-400 font-mono">
-                <span>Format: ADUN/...</span>
-                <span>{matricInput.length} characters</span>
+          {/* Error Banner */}
+          {errorBanner && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-2.5 text-xs text-red-800">
+              <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="font-semibold">{errorBanner}</p>
+                {rateLimitedUntil && (
+                  <p className="mt-1 text-slate-600">
+                    Retry in <strong>{rateLimitSeconds}s</strong>
+                  </p>
+                )}
               </div>
             </div>
+          )}
 
-            {/* Error Banner */}
-            {errorBanner && (
-              <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2 text-xs text-red-800 animate-shake">
-                <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-                <span className="flex-1 font-medium">{errorBanner}</span>
+          {/* Matric Input Form */}
+          {!foundStudent && (
+            <div className="space-y-4">
+              <div>
+                <label
+                  htmlFor="matricInput"
+                  className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1.5"
+                >
+                  Matriculation Number
+                </label>
+                <div className="relative">
+                  <input
+                    id="matricInput"
+                    type="text"
+                    value={matricInput}
+                    onChange={handleInputChange}
+                    placeholder="e.g. ADUN/FS/COM/25/001"
+                    disabled={loading || Boolean(rateLimitedUntil)}
+                    autoCapitalize="characters"
+                    autoCorrect="off"
+                    spellCheck="false"
+                    className="w-full bg-slate-50 border-2 border-slate-200 focus:border-[#1E40AF] focus:bg-white text-slate-900 font-mono text-sm uppercase rounded-2xl px-4 py-3.5 outline-none transition-all placeholder:text-slate-400 placeholder:normal-case font-bold"
+                  />
+                  {loading && (
+                    <div className="absolute right-3.5 top-3.5 text-[#1E40AF]">
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                    </div>
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1.5">
+                  Lookup is automatic as you type
+                </p>
               </div>
-            )}
 
-            {!foundStudent && (
+              {/* Manual Lookup button fallback */}
               <button
-                type="submit"
-                disabled={loading || matricInput.length < 3}
+                type="button"
+                onClick={() => performLookup(matricInput)}
+                disabled={loading || matricInput.length < 5 || Boolean(rateLimitedUntil)}
                 className="w-full flex items-center justify-center gap-2 bg-[#1E40AF] hover:bg-blue-800 active:bg-blue-900 disabled:bg-slate-200 disabled:text-slate-400 text-white font-semibold text-xs py-3.5 px-4 rounded-xl shadow-xs transition-all active:scale-[0.99]"
               >
                 {loading ? (
                   <>
-                    <Loader2 className="w-4 h-4 animate-spin text-white" />
-                    Verifying student & device...
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Searching university roster...</span>
                   </>
                 ) : (
                   <>
-                    <UserCheck className="w-4 h-4" />
-                    Verify Student Record
+                    <span>Verify Matric Number</span>
+                    <ArrowRight className="w-4 h-4" />
                   </>
                 )}
               </button>
-            )}
-          </form>
-        </div>
-
-        {/* STUDENT FOUND Card */}
-        {foundStudent && (
-          <div className="w-full bg-emerald-50/70 border-2 border-emerald-500/30 rounded-3xl p-5 shadow-xs mb-4 animate-fade-in">
-            <div className="flex items-center justify-between mb-3">
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-600 text-white text-[11px] font-bold tracking-wide uppercase">
-                <CheckCircle2 className="w-3.5 h-3.5" /> Student Verified
-              </span>
-
-              <button
-                onClick={handleManualEdit}
-                type="button"
-                className="text-[11px] font-semibold text-slate-600 hover:text-[#1E40AF] inline-flex items-center gap-1 transition-colors"
-              >
-                <Edit3 className="w-3 h-3" /> Edit
-              </button>
             </div>
+          )}
 
-            <div className="space-y-2 text-left">
-              <div>
-                <span className="text-[10px] uppercase font-bold text-slate-500 block">Full Name</span>
-                <span className="text-sm font-extrabold text-slate-900">
-                  {foundStudent.surname.toUpperCase()}, {foundStudent.first_name} {foundStudent.middle_name || ''}
-                </span>
+          {/* Student Confirmation Card (Shown once matric is resolved) */}
+          {foundStudent && (
+            <div className="space-y-4">
+              <div className="bg-blue-50/70 border border-blue-200/80 rounded-2xl p-4 text-left relative overflow-hidden">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-[#1E40AF] bg-blue-100/80 px-2 py-0.5 rounded-md">
+                    Enrolled Student
+                  </span>
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                </div>
+
+                <div className="text-sm font-extrabold text-slate-900 leading-tight">
+                  {foundStudent.surname}, {foundStudent.first_name}
+                </div>
+                <div className="text-xs font-mono font-bold text-[#1E40AF] mt-0.5">
+                  {foundStudent.matric_no}
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 mt-3 pt-2.5 border-t border-blue-200/60 text-xs">
+                  <div>
+                    <span className="text-[10px] uppercase font-semibold text-slate-400 block">
+                      Program
+                    </span>
+                    <span className="font-bold text-slate-700 text-[11px]">
+                      {foundStudent.program}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase font-semibold text-slate-400 block">
+                      Level
+                    </span>
+                    <span className="font-bold text-slate-700 text-[11px]">
+                      {foundStudent.level} Level
+                    </span>
+                  </div>
+                </div>
+
+                {/* Subtitle UX hint based on localStorage check */}
+                {bindingHint && (
+                  <div className="mt-3 pt-2 border-t border-blue-200/60 flex items-center gap-1.5 text-[11px]">
+                    {bindingHint.hasBinding && bindingHint.isMatch ? (
+                      <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                        <Smartphone className="w-3 h-3 text-emerald-600" /> This device remembers you
+                      </span>
+                    ) : bindingHint.hasBinding && !bindingHint.isMatch ? (
+                      <span className="text-amber-800 font-medium leading-tight">
+                        Note: If this device belonged to another student, admin reset will be required.
+                      </span>
+                    ) : null}
+                  </div>
+                )}
               </div>
 
-              <div className="grid grid-cols-2 gap-2 pt-1 border-t border-emerald-200/50">
-                <div>
-                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Programme</span>
-                  <span className="text-xs font-semibold text-slate-800">{foundStudent.program}</span>
-                </div>
-                <div>
-                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Level</span>
-                  <span className="text-xs font-semibold text-slate-800">{foundStudent.level} Level</span>
-                </div>
+              {/* Action Buttons: Continue vs Edit */}
+              <div className="space-y-2 pt-1">
+                <button
+                  type="button"
+                  onClick={handleContinue}
+                  disabled={bindingInProgress}
+                  className="w-full flex items-center justify-center gap-2 bg-[#1E40AF] hover:bg-blue-800 active:bg-blue-900 disabled:bg-slate-300 text-white font-semibold text-xs py-3.5 px-4 rounded-xl shadow-xs transition-all active:scale-[0.99]"
+                >
+                  {bindingInProgress ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Verifying device binding...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Continue to Location Check</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleEdit}
+                  disabled={bindingInProgress}
+                  className="w-full flex items-center justify-center gap-1.5 bg-white hover:bg-slate-50 text-slate-600 font-semibold text-xs py-2.5 px-4 rounded-xl border border-slate-200 transition-colors"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span>Not you? Edit matric number</span>
+                </button>
               </div>
             </div>
-
-            <div className="mt-3 pt-2 text-[11px] text-slate-500 text-center">
-              Not you, or details wrong?{' '}
-              <button
-                onClick={handleManualEdit}
-                className="font-bold text-[#1E40AF] underline"
-              >
-                Edit manually
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Notice Banner */}
-        <div className="w-full bg-blue-50/60 border border-blue-100 rounded-2xl p-3.5 text-xs text-blue-950 mb-5">
-          <p className="leading-snug">
-            Next, your classroom location and a live selfie will be recorded to verify your physical presence.
-          </p>
+          )}
         </div>
 
-        {/* Continue CTA */}
-        {foundStudent && (
-          <div className="mt-auto pb-4">
-            <button
-              onClick={handleProceed}
-              type="button"
-              className="w-full flex items-center justify-center gap-2 bg-[#1E40AF] hover:bg-blue-800 active:bg-blue-900 text-white font-semibold text-sm py-3.5 px-4 rounded-2xl shadow-md transition-all active:scale-[0.99]"
-            >
-              Continue to Location Check
-              <ArrowRight className="w-4 h-4" />
-            </button>
-          </div>
-        )}
+        {/* Security badge footer */}
+        <div className="text-center text-[11px] text-slate-400 flex items-center justify-center gap-1.5 mt-auto pb-4">
+          <ShieldCheck className="w-3.5 h-3.5 text-[#1E40AF]" />
+          <span>ADUN Strict 1-Device Binding Enforced</span>
+        </div>
       </div>
     </div>
   );

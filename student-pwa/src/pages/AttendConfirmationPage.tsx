@@ -3,15 +3,20 @@ import { useNavigate } from 'react-router-dom';
 import confetti from 'canvas-confetti';
 import { CheckCircle2, Download, Home, HelpCircle, ShieldCheck, Clock } from 'lucide-react';
 import { AdunLogo } from '../components/AdunLogo';
-import { getAttemptState, clearAttemptState } from '../lib/sessionStorage';
+import { getAttemptState, clearAttemptState } from '../lib/attemptState';
 import { formatToLagosTime } from '../lib/crypto';
 
 export const AttendConfirmationPage: React.FC = () => {
   const navigate = useNavigate();
   const attempt = getAttemptState();
-  const receipt = attempt?.receipt;
 
+  // Route Guard: Strictly requires confirmed receipt and student (Fixes QA-07)
   useEffect(() => {
+    if (!attempt?.receipt?.receipt_id || !attempt?.student) {
+      navigate('/', { replace: true });
+      return;
+    }
+
     // Fire celebratory confetti on mount
     try {
       confetti({
@@ -21,11 +26,17 @@ export const AttendConfirmationPage: React.FC = () => {
         colors: ['#1E40AF', '#3B82F6', '#60A5FA', '#10B981', '#F59E0B'],
       });
     } catch {}
-  }, []);
+  }, [attempt, navigate]);
+
+  if (!attempt?.receipt?.receipt_id || !attempt?.student) {
+    return null;
+  }
+
+  const receipt = attempt.receipt;
 
   const handleFinish = () => {
     clearAttemptState();
-    navigate('/');
+    navigate('/', { replace: true });
   };
 
   const handleDownload = () => {
@@ -45,7 +56,7 @@ export const AttendConfirmationPage: React.FC = () => {
           {/* Top Navy Blue Decorative Bar */}
           <div className="absolute top-0 left-0 right-0 h-2 bg-[#1E40AF]" />
 
-          {/* Receipt Official Seal (Visible on print and screen) */}
+          {/* Receipt Official Seal */}
           <div className="flex items-center justify-center gap-2 mb-3 pt-1">
             <img
               src="/adun-logo.png"
@@ -74,8 +85,8 @@ export const AttendConfirmationPage: React.FC = () => {
             Verified Academic Attendance Confirmation
           </p>
 
-          {/* Selfie Thumbnail (if present) */}
-          {receipt?.selfie_preview && (
+          {/* Selfie Thumbnail */}
+          {receipt.selfie_preview && (
             <div className="relative w-20 h-20 rounded-full mx-auto mb-4 p-1 border-2 border-blue-500/40 bg-blue-50 shadow-inner">
               <img
                 src={receipt.selfie_preview}
@@ -88,14 +99,14 @@ export const AttendConfirmationPage: React.FC = () => {
             </div>
           )}
 
-          {/* Receipt Data Table */}
+          {/* Receipt Data Table — NO FAKE FALLBACK STRINGS (Fixes QA-07) */}
           <div className="bg-slate-50/90 border border-slate-200/80 rounded-2xl p-4 text-left space-y-2.5 text-xs mb-5">
             <div>
               <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
                 Student Name
               </span>
               <span className="font-extrabold text-slate-900 text-sm">
-                {receipt?.student_name || 'STUDENT RECORD'}
+                {receipt.student_name}
               </span>
             </div>
 
@@ -105,7 +116,7 @@ export const AttendConfirmationPage: React.FC = () => {
                   Matric No
                 </span>
                 <span className="font-mono font-bold text-[#1E40AF] text-xs">
-                  {receipt?.matric_no || attempt?.student?.matric_no || 'N/A'}
+                  {receipt.matric_no}
                 </span>
               </div>
               <div>
@@ -114,12 +125,12 @@ export const AttendConfirmationPage: React.FC = () => {
                 </span>
                 <span
                   className={`inline-flex items-center gap-1 font-bold text-xs uppercase px-2 py-0.5 rounded-md ${
-                    receipt?.status === 'late'
+                    receipt.status === 'late'
                       ? 'bg-amber-100 text-amber-800'
                       : 'bg-emerald-100 text-emerald-800'
                   }`}
                 >
-                  <Clock className="w-3 h-3" /> {receipt?.status || 'Present'}
+                  <Clock className="w-3 h-3" /> {receipt.status}
                 </span>
               </div>
             </div>
@@ -129,7 +140,7 @@ export const AttendConfirmationPage: React.FC = () => {
                 Course
               </span>
               <span className="font-semibold text-slate-800">
-                {receipt?.course_code ? `${receipt.course_code} - ${receipt.course_title}` : 'Lecture Session'}
+                {receipt.course_code} — {receipt.course_title}
               </span>
             </div>
 
@@ -138,7 +149,7 @@ export const AttendConfirmationPage: React.FC = () => {
                 Timestamp (Africa/Lagos)
               </span>
               <span className="font-medium text-slate-700">
-                {formatToLagosTime(receipt?.signed_at || new Date())}
+                {formatToLagosTime(receipt.signed_at)}
               </span>
             </div>
 
@@ -147,7 +158,7 @@ export const AttendConfirmationPage: React.FC = () => {
                 Receipt Verification ID
               </span>
               <span className="font-mono font-extrabold text-[#1E40AF] text-xs tracking-wider">
-                {receipt?.receipt_id || 'ADUN-CONFIRMED'}
+                {receipt.receipt_id}
               </span>
             </div>
           </div>

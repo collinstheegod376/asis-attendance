@@ -2,6 +2,7 @@
  * ADUN Attendance - Strict Client Device Fingerprinting & Gate 0 Incognito Detection
  * Option 2: Deterministic device fingerprinting (Canvas, WebGL, Screen, Concurrency, Audio, Timezone, Platform)
  * Fail-closed policy: Returns code BIND-200 if fingerprint generation fails or is blocked by ad-blockers.
+ * Fixes: PERF-15, SEC-19
  */
 
 export interface FingerprintResult {
@@ -93,15 +94,19 @@ function getWebGLFingerprint(): Record<string, unknown> {
 
 /**
  * Computes deterministic audio dynamics compressor fingerprint
+ * Reduced to 5000 samples (Fixes PERF-15)
  */
 async function getAudioFingerprint(): Promise<string> {
   try {
-    const AudioContextClass = window.OfflineAudioContext || (window as unknown as { webkitOfflineAudioContext: typeof OfflineAudioContext }).webkitOfflineAudioContext;
+    const AudioContextClass =
+      window.OfflineAudioContext ||
+      (window as unknown as { webkitOfflineAudioContext: typeof OfflineAudioContext }).webkitOfflineAudioContext;
     if (!AudioContextClass) {
       return 'AUDIO_UNSUPPORTED';
     }
 
-    const context = new AudioContextClass(1, 44100, 44100);
+    // Reduced from 44100 to 5000 samples for performance and consistency
+    const context = new AudioContextClass(1, 5000, 44100);
     const oscillator = context.createOscillator();
     oscillator.type = 'triangle';
     oscillator.frequency.setValueAtTime(10000, context.currentTime);
@@ -133,14 +138,20 @@ async function getAudioFingerprint(): Promise<string> {
 }
 
 /**
- * Screen dimensions, pixel ratio and color depth
+ * Orientation-invariant screen dimensions (Fixes PERF-15)
+ * Uses Math.min and Math.max so phone rotation does not change the fingerprint hash.
  */
 function getScreenInfo(): Record<string, unknown> {
+  const w = window.screen.width || 0;
+  const h = window.screen.height || 0;
+  const aw = window.screen.availWidth || 0;
+  const ah = window.screen.availHeight || 0;
+
   return {
-    width: window.screen.width,
-    height: window.screen.height,
-    availWidth: window.screen.availWidth,
-    availHeight: window.screen.availHeight,
+    minDimension: Math.min(w, h),
+    maxDimension: Math.max(w, h),
+    minAvailDimension: Math.min(aw, ah),
+    maxAvailDimension: Math.max(aw, ah),
     colorDepth: window.screen.colorDepth,
     pixelDepth: window.screen.pixelDepth,
     pixelRatio: window.devicePixelRatio || 1,
@@ -266,7 +277,6 @@ export async function detectIncognito(): Promise<boolean> {
       try {
         const isPersisted = await navigator.storage.persisted();
         if (!isPersisted) {
-          // If persist() returns false instantly, it often correlates with private mode
           const canPersist = await navigator.storage.persist();
           if (!canPersist && navigator.userAgent.includes('Chrome')) {
             // Strong auxiliary signal in desktop Chrome
@@ -279,7 +289,8 @@ export async function detectIncognito(): Promise<boolean> {
 
     // 3. WebKit Temporary Storage / RequestFileSystem API (Legacy Chromium & Safari)
     try {
-      const fs = (window as unknown as { webkitRequestFileSystem?: unknown; RequestFileSystem?: unknown }).webkitRequestFileSystem;
+      const fs = (window as unknown as { webkitRequestFileSystem?: unknown; RequestFileSystem?: unknown })
+        .webkitRequestFileSystem;
       if (typeof fs === 'function') {
         const isPrivate = await new Promise<boolean>((resolve) => {
           (fs as (type: number, size: number, success: () => void, error: () => void) => void)(

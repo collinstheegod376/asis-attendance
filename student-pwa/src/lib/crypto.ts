@@ -1,10 +1,13 @@
 /**
  * Cryptographic & Device Binding Utilities
+ * Fixes: QA-05, PERF-15, SEC-19
  */
 
 const APP_SALT = 'ADUN_ATTENDANCE_SALT_v1';
 const DEVICE_ID_KEY = 'adun_device_uuid';
 const DEVICE_BINDING_KEY = 'adun_device_binding';
+
+const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
  * Computes SHA-256 hex string using browser Web Crypto API
@@ -18,76 +21,98 @@ export async function sha256Hex(input: string): Promise<string> {
 }
 
 /**
- * Normalizes matric numbers: trims whitespace, removes repeated slashes/spaces, uppercase
+ * Normalizes matric numbers: strips all whitespace, uppercase
+ * Fixes SEC-19
  */
 export function normalizeMatric(matric: string): string {
-  if (!matric) return '';
-  return matric.trim().toUpperCase().replace(/\s+/g, '');
+  return (matric || '').toUpperCase().trim().replace(/\s+/g, '');
 }
 
 /**
- * Gets or creates a persistent random UUID for this device
+ * Generates an RFC-4122 v4 compliant UUID
+ */
+function generateUUIDv4(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // Version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // Variant 10xx
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
+  // Pure Math.random fallback strictly matching RFC-4122 v4 structure
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+/**
+ * Gets or creates a persistent RFC-4122 UUID v4 for this device.
+ * Never returns dev_* or temp_device_* (Fixes QA-05)
  */
 export function getOrCreateDeviceId(): string {
   try {
     let id = localStorage.getItem(DEVICE_ID_KEY);
-    if (!id) {
-      if (typeof crypto.randomUUID === 'function') {
-        id = crypto.randomUUID();
-      } else {
-        id = 'dev_' + Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
-      }
+    if (!id || !UUID_V4_REGEX.test(id.trim())) {
+      id = generateUUIDv4();
       localStorage.setItem(DEVICE_ID_KEY, id);
     }
-    return id;
+    return id.trim();
   } catch {
-    return 'temp_device_' + Date.now();
+    return generateUUIDv4();
   }
 }
 
+export interface ClientDeviceBindingHint {
+  hasBinding: boolean;
+  isMatch: boolean;
+  boundMatricDisplay?: string;
+}
+
 /**
- * Checks soft device lock:
- * If this device is already bound to another matric number hash, returns false.
+ * Reads client-side localStorage binding hint.
+ * Informational UX hint only — NEVER authoritative, NEVER hard-blocks (Fixes QA-04, SEC-12).
  */
-export async function checkDeviceBinding(matric: string): Promise<{
-  allowed: boolean;
-  message?: string;
-  isFirstBinding: boolean;
-}> {
+export async function checkDeviceBinding(matric: string): Promise<ClientDeviceBindingHint> {
   const normalized = normalizeMatric(matric);
+  if (!normalized) {
+    return { hasBinding: false, isMatch: false };
+  }
+
   const incomingHash = await sha256Hex(normalized + ':' + APP_SALT);
 
   try {
     const raw = localStorage.getItem(DEVICE_BINDING_KEY);
     if (!raw) {
-      return { allowed: true, isFirstBinding: true };
+      return { hasBinding: false, isMatch: false };
     }
 
     const binding = JSON.parse(raw);
     if (binding && binding.matric_hash) {
-      if (binding.matric_hash === incomingHash) {
-        // Same student on this device
-        binding.last_seen_at = new Date().toISOString();
-        localStorage.setItem(DEVICE_BINDING_KEY, JSON.stringify(binding));
-        return { allowed: true, isFirstBinding: false };
-      } else {
-        // Bound to a different matric
-        return {
-          allowed: false,
-          isFirstBinding: false,
-          message: 'This device is bound to another matric number. Use your original device or contact your lecturer/admin to reset your binding.',
-        };
-      }
+      const isMatch = binding.matric_hash === incomingHash;
+      return {
+        hasBinding: true,
+        isMatch,
+        boundMatricDisplay: binding.matric_display,
+      };
     }
   } catch (e) {
     console.error('Error parsing device binding:', e);
   }
 
-  return { allowed: true, isFirstBinding: true };
+  return { hasBinding: false, isMatch: false };
 }
 
 /**
- * Saves or updates matric binding in localStorage
+ * Saves or updates matric binding in localStorage post-confirmation ONLY
+ * (Fixes SEC-12).
  */
 export async function bindDeviceToMatric(matric: string): Promise<void> {
   const normalized = normalizeMatric(matric);
@@ -98,6 +123,7 @@ export async function bindDeviceToMatric(matric: string): Promise<void> {
   const binding = {
     device_id: deviceId,
     matric_hash: hash,
+    matric_display: normalized,
     first_bound_at: now,
     last_seen_at: now,
   };
@@ -128,8 +154,8 @@ export function formatToLagosTime(dateInput: Date | string = new Date()): string
 }
 
 /**
- * Generates client idempotency key
+ * Generates client idempotency key (valid UUID v4)
  */
 export function generateIdempotencyKey(): string {
-  return 'req_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 9);
+  return generateUUIDv4();
 }

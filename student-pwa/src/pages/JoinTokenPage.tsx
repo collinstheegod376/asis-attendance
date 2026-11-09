@@ -1,17 +1,41 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { RefreshCw, ShieldAlert } from 'lucide-react';
 import { AdunLogo } from '../components/AdunLogo';
-import { attendanceApi } from '../lib/supabase';
-import { initAttemptState } from '../lib/sessionStorage';
+import { attendanceService, ApiError } from '../lib/attendanceService';
+import { getAttemptState, initAttemptState, clearAttemptState } from '../lib/attemptState';
 import { detectIncognito } from '../lib/deviceFingerprint';
 
 export const JoinTokenPage: React.FC = () => {
   const { token } = useParams<{ token: string }>();
   const navigate = useNavigate();
+
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [rateLimitedUntil, setRateLimitedUntil] = useState<number | null>(null);
+  const [rateLimitSeconds, setRateLimitSeconds] = useState<number>(0);
+  const validatedRef = useRef(false);
+
+  // Countdown timer for rate limiting
+  useEffect(() => {
+    if (!rateLimitedUntil) return;
+    const interval = setInterval(() => {
+      const remaining = Math.max(0, Math.ceil((rateLimitedUntil - Date.now()) / 1000));
+      setRateLimitSeconds(remaining);
+      if (remaining <= 0) {
+        setRateLimitedUntil(null);
+        setErrorMsg(null);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [rateLimitedUntil]);
 
   useEffect(() => {
+    // 1. HTTPS Guard (Fixes PERF-17)
+    if (!window.isSecureContext && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      navigate('/unsupported', { replace: true });
+      return;
+    }
+
     // Set no-referrer meta
     let meta = document.querySelector('meta[name="referrer"]') as HTMLMetaElement | null;
     if (!meta) {
@@ -22,17 +46,26 @@ export const JoinTokenPage: React.FC = () => {
     meta.content = 'no-referrer';
 
     if (!token || !token.trim()) {
+      clearAttemptState();
       navigate('/invalid', { replace: true });
       return;
     }
 
-    let isMounted = true;
+    // Offline check (Fixes PERF-14)
+    if (!navigator.onLine) {
+      navigate('/offline', { replace: true });
+      return;
+    }
+
+    if (validatedRef.current) return;
+    validatedRef.current = true;
 
     async function runGate0AndValidate() {
       // GATE 0: Incognito check
       try {
         const isPrivate = await detectIncognito();
-        if (isPrivate && isMounted) {
+        if (isPrivate) {
+          clearAttemptState();
           navigate('/block/incognito?ref=BIND-205', { replace: true });
           return;
         }
@@ -41,61 +74,84 @@ export const JoinTokenPage: React.FC = () => {
       }
 
       try {
-        const response: any = await attendanceApi.validateSessionToken(token!.trim());
+        const cleanToken = token!.trim();
+        const existingAttempt = getAttemptState();
+        // Check if we can reuse existing attempt token (Fixes SEC-22)
+        const reuseAttemptToken =
+          existingAttempt && existingAttempt.raw_token === cleanToken
+            ? existingAttempt.attempt_token
+            : undefined;
 
-        if (!isMounted) return;
+        const response = await attendanceService.validateSessionToken(cleanToken, reuseAttemptToken);
 
-        if (!response || !response.success) {
-          const errCode = response?.error;
-          switch (errCode) {
-            case 'SESSION_EXPIRED':
-              navigate('/expired', { replace: true });
-              return;
-            case 'SESSION_NOT_STARTED':
-              navigate('/not-started', { replace: true });
-              return;
-            case 'SESSION_CLOSED':
-            case 'COURSE_ARCHIVED':
-              navigate('/closed', { replace: true });
-              return;
-            case 'INVALID_TOKEN':
-            default:
-              navigate('/invalid', { replace: true });
-              return;
-          }
-        }
+        // Success: initialize / reuse attempt state in sessionStorage
+        initAttemptState(
+          cleanToken,
+          response.attempt_id,
+          response.attempt_token,
+          {
+            id: response.session_id,
+            title: 'ADUN Attendance Session',
+            course_code: response.course_id ? `COURSE-${response.course_id.slice(0, 6)}` : 'ADUN LECTURE',
+            course_title: 'Academic Lecture Attendance',
+            starts_at: new Date().toISOString(),
+            expires_at: response.expires_at,
+            grace_minutes: 15,
+          },
+          existingAttempt?.idempotency_key
+        );
 
-        // Token is valid! Initialize attempt in sessionStorage
-        if (response.attempt_id && response.attempt_token && response.session) {
-          initAttemptState(
-            token!.trim(),
-            response.attempt_id,
-            response.attempt_token,
-            response.session
-          );
-
-          // Proceed to step 1
-          navigate('/attend/identity', { replace: true });
-        } else {
-          navigate('/invalid', { replace: true });
-        }
-      } catch (err: any) {
+        // Proceed directly to identity step
+        navigate('/attend/identity', { replace: true });
+      } catch (err: unknown) {
         console.error('Validation error:', err);
-        if (isMounted) {
-          if (!navigator.onLine) {
-            navigate('/offline', { replace: true });
-          } else {
-            setErrorMsg(err.message || 'Unable to connect to university server.');
+
+        if (!navigator.onLine) {
+          navigate('/offline', { replace: true });
+          return;
+        }
+
+        if (err instanceof ApiError) {
+          // Rate limit awareness (Fixes SEC-18)
+          if (err.status === 429) {
+            setRateLimitedUntil(Date.now() + 60000);
+            setRateLimitSeconds(60);
+            setErrorMsg('Too many attempts. Please wait 60 seconds.');
+            return;
           }
+
+          if (err.status === 410 || err.code === 'SESSION_EXPIRED' || err.code === 'ATTEMPT_EXPIRED') {
+            clearAttemptState();
+            navigate('/expired', { replace: true });
+            return;
+          }
+
+          if (err.status === 425 || err.code === 'SESSION_NOT_STARTED') {
+            clearAttemptState();
+            navigate('/not-started', { replace: true });
+            return;
+          }
+
+          if (err.status === 403 || err.code === 'SESSION_CLOSED' || err.code === 'COURSE_ARCHIVED') {
+            clearAttemptState();
+            navigate('/closed', { replace: true });
+            return;
+          }
+
+          if (err.code === 'INVALID_TOKEN' || err.status === 400 || err.status === 404) {
+            clearAttemptState();
+            navigate('/invalid', { replace: true });
+            return;
+          }
+
+          setErrorMsg(err.message || 'Unable to validate lecture session.');
+        } else {
+          setErrorMsg('Unable to connect to university server. Check connection.');
         }
       }
     }
 
     runGate0AndValidate();
-
-    return () => {
-      isMounted = false;
-    };
   }, [token, navigate]);
 
   return (
@@ -119,12 +175,20 @@ export const JoinTokenPage: React.FC = () => {
             <ShieldAlert className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
             <div className="text-xs text-red-800">
               <p className="font-semibold">{errorMsg}</p>
-              <button
-                onClick={() => window.location.reload()}
-                className="mt-2 text-[#1E40AF] font-bold underline"
-              >
-                Retry verification
-              </button>
+              {rateLimitedUntil ? (
+                <p className="mt-1 text-slate-600 font-medium">
+                  Retry available in{' '}
+                  <strong className="text-red-900 font-extrabold">{rateLimitSeconds}s</strong>
+                </p>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="mt-2 text-[#1E40AF] font-bold underline"
+                >
+                  Retry verification
+                </button>
+              )}
             </div>
           </div>
         )}

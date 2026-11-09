@@ -1,141 +1,186 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Play, CheckCircle2, ShieldAlert, ArrowRight, Loader2, Info } from 'lucide-react';
+import { ShieldAlert, ArrowRight, Loader2, Info } from 'lucide-react';
 import { Header } from '../components/Header';
-import { getAttemptState, updateAttemptVideoWatched, updateAttemptReceipt } from '../lib/sessionStorage';
-import { attendanceApi } from '../lib/supabase';
-import { generateIdempotencyKey, getOrCreateDeviceId } from '../lib/crypto';
+import { getAttemptState, updateAttemptReceipt, clearAttemptState } from '../lib/attemptState';
+import { attendanceService, ApiError } from '../lib/attendanceService';
 import { generateDeviceFingerprint } from '../lib/deviceFingerprint';
+import { getOrCreateDeviceId } from '../lib/crypto';
 import type { AttendanceReceipt } from '../types';
 
 export const AttendVideoPage: React.FC = () => {
   const navigate = useNavigate();
   const attempt = getAttemptState();
 
-  const [hasWatched, setHasWatched] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  // Step Guards (Fixes QA-06)
   useEffect(() => {
-    if (!attempt || !attempt.student || !attempt.selfie_data_url) {
+    if (!attempt || !attempt.attempt_id || !attempt.attempt_token) {
+      clearAttemptState();
+      navigate('/', { replace: true });
+      return;
+    }
+
+    if (!attempt.student) {
       navigate('/attend/identity', { replace: true });
+      return;
+    }
+
+    if (!attempt.location) {
+      navigate('/attend/location', { replace: true });
+      return;
+    }
+
+    if (!attempt.selfie_path) {
+      navigate('/attend/selfie', { replace: true });
+      return;
     }
   }, [attempt, navigate]);
 
   const handleSubmit = async () => {
-    if (!hasWatched || submitting || !attempt) return;
+    if (submitting || !attempt || !attempt.attempt_token || !attempt.selfie_path) return;
 
     setSubmitting(true);
     setSubmitError(null);
 
     try {
-      updateAttemptVideoWatched(true);
+      // 1. Stable idempotency key from attemptState (Fixes QA-11)
+      const idempotencyKey = attempt.idempotency_key;
 
-      const idempotencyKey = generateIdempotencyKey();
-      const selfiePath = attempt.selfie_path || `selfies/${attempt.session.id}/${attempt.student?.id}/${attempt.attempt_id}.jpg`;
-      const deviceId = getOrCreateDeviceId();
-
-      // Gate 4: Ensure deterministic fingerprint_hash is included
+      // 2. Resolve deterministic fingerprint hash
       let fpHash = attempt.fingerprint_hash;
       if (!fpHash) {
         const fp = await generateDeviceFingerprint();
         if (fp.success && fp.hash) {
           fpHash = fp.hash;
         } else {
-          // Fail-closed policy
-          navigate(
-            `/block/contact-admin?ref=BIND-200&reason=${encodeURIComponent(
-              'Device fingerprint generation failed or was blocked by browser privacy settings.'
-            )}`
-          );
+          clearAttemptState();
+          navigate('/block/contact-admin?ref=BIND-200', { replace: true });
           return;
         }
       }
 
+      const deviceId = getOrCreateDeviceId();
+
+      // 3. Clean device_info payload: NEVER include selfie_data_url (Fixes PERF-07)
       const deviceInfo = {
         userAgent: navigator.userAgent,
-        screen: `${window.screen.width}x${window.screen.height}`,
+        screenResolution: `${window.screen.width}x${window.screen.height}`,
         language: navigator.language,
         submittedAt: new Date().toISOString(),
-        fingerprint_hash: fpHash,
-        device_id: deviceId,
-        selfie_data_url: attempt.selfie_data_url,
+        fingerprintHash: fpHash,
+        local_device_id: deviceId,
+        incognito_signal: Boolean(attempt.is_incognito),
       };
 
-      const result: any = await attendanceApi.submitAttendance(
-        attempt.attempt_id,
-        attempt.attempt_token,
-        selfiePath,
+      // 4. Submit attendance via Edge Function
+      const result = await attendanceService.submitAttendance({
+        attemptToken: attempt.attempt_token,
+        selfiePath: attempt.selfie_path,
+        fingerprintHash: fpHash,
         deviceInfo,
-        idempotencyKey
-      );
+        idempotencyKey,
+      });
 
-      if (!result || !result.success) {
-        const err = result?.error;
-        const ref = result?.reference_code;
-        const msg = (result?.message || result?.reason || '') as string;
-
-        // Gate 4 Anti-Proxy / Same-session multi-student check (Option 2 Spec)
-        if (ref === 'BIND-203' || err === 'SHARED_DEVICE' || msg.includes('already been used for another student')) {
-          navigate('/block/shared-device?ref=BIND-203');
-          return;
-        }
-
-        if (ref === 'BIND-201' || err === 'NEW_DEVICE' || msg.includes('New device detected')) {
-          navigate('/block/new-device?ref=BIND-201');
-          return;
-        }
-
-        if (ref === 'BIND-202' || err === 'DEVICE_IN_USE' || msg.includes('registered to another student')) {
-          navigate('/block/device-in-use?ref=BIND-202');
-          return;
-        }
-
-        if (ref === 'BIND-205' || err === 'OPEN_NORMAL_BROWSER' || msg.includes('Incognito')) {
-          navigate('/block/incognito?ref=BIND-205');
-          return;
-        }
-
-        if (ref === 'BIND-204' || err === 'CONTACT_ADMIN') {
-          navigate('/block/contact-admin?ref=BIND-204');
-          return;
-        }
-
-        if (err === 'ALREADY_SIGNED') {
-          navigate('/already-signed');
-          return;
-        } else if (err === 'SESSION_EXPIRED' || err === 'ATTEMPT_EXPIRED') {
-          navigate('/expired');
-          return;
-        } else {
-          setSubmitError(result?.message || 'Attendance submission failed. Please try again.');
-          setSubmitting(false);
-          return;
-        }
-      }
-
-      // Successful submission
+      // Construct Receipt
       const receipt: AttendanceReceipt = {
-        receipt_id: result.receipt_id || `ADUN-${Date.now().toString(36).toUpperCase()}`,
+        receipt_id: result.receipt_id,
         status: result.status || 'present',
         signed_at: result.signed_at || new Date().toISOString(),
-        course_code: result.course_code || attempt.session.course_code,
-        course_title: result.course_title || attempt.session.course_title,
-        student_name: result.student_name || `${attempt.student?.surname}, ${attempt.student?.first_name}`,
-        matric_no: result.matric_no || attempt.student?.matric_no || '',
+        course_code: attempt.session?.course_code || 'ADUN COURSE',
+        course_title: attempt.session?.course_title || 'Academic Lecture',
+        student_name: `${attempt.student?.surname}, ${attempt.student?.first_name}`,
+        matric_no: attempt.student?.matric_no || '',
         selfie_preview: attempt.selfie_data_url,
       };
 
       updateAttemptReceipt(receipt);
 
-      // Advance to final confirmation receipt screen
+      // Advance to final confirmation screen
       navigate('/attend/confirmation');
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Submission error:', err);
+
       if (!navigator.onLine) {
-        navigate('/offline');
+        navigate('/offline', { replace: true });
+        return;
+      }
+
+      if (err instanceof ApiError) {
+        const errCode = err.code;
+        const ref = (err.data?.reference_code as string) || '';
+        const refEncoded = encodeURIComponent(ref);
+
+        if (err.status === 409 && errCode === 'ALREADY_SIGNED') {
+          // If already signed, check if receipt exists
+          if (err.data?.receipt_id) {
+            const receipt: AttendanceReceipt = {
+              receipt_id: err.data.receipt_id,
+              status: err.data.status || 'present',
+              signed_at: err.data.signed_at || new Date().toISOString(),
+              course_code: attempt.session?.course_code || 'ADUN COURSE',
+              course_title: attempt.session?.course_title || 'Academic Lecture',
+              student_name: `${attempt.student?.surname}, ${attempt.student?.first_name}`,
+              matric_no: attempt.student?.matric_no || '',
+              selfie_preview: attempt.selfie_data_url,
+            };
+            updateAttemptReceipt(receipt);
+            navigate('/attend/confirmation');
+            return;
+          }
+          clearAttemptState();
+          navigate('/already-signed', { replace: true });
+          return;
+        }
+
+        if (errCode === 'SESSION_EXPIRED' || errCode === 'ATTEMPT_EXPIRED' || err.status === 410) {
+          clearAttemptState();
+          navigate('/expired', { replace: true });
+          return;
+        }
+
+        if (errCode === 'SESSION_CLOSED') {
+          clearAttemptState();
+          navigate('/closed', { replace: true });
+          return;
+        }
+
+        // Handle BIND reference codes
+        if (ref.startsWith('BIND-203') || errCode === 'SHARED_DEVICE') {
+          clearAttemptState();
+          navigate(`/block/shared-device?ref=${refEncoded}`, { replace: true });
+          return;
+        }
+
+        if (ref.startsWith('BIND-201') || errCode === 'NEW_DEVICE') {
+          clearAttemptState();
+          navigate(`/block/new-device?ref=${refEncoded}`, { replace: true });
+          return;
+        }
+
+        if (ref.startsWith('BIND-202') || errCode === 'DEVICE_IN_USE') {
+          clearAttemptState();
+          navigate(`/block/device-in-use?ref=${refEncoded}`, { replace: true });
+          return;
+        }
+
+        if (ref.startsWith('BIND-205') || errCode === 'OPEN_NORMAL_BROWSER') {
+          clearAttemptState();
+          navigate(`/block/incognito?ref=${refEncoded}`, { replace: true });
+          return;
+        }
+
+        if (ref.startsWith('BIND-204') || errCode === 'CONTACT_ADMIN') {
+          clearAttemptState();
+          navigate(`/block/contact-admin?ref=${refEncoded}`, { replace: true });
+          return;
+        }
+
+        setSubmitError(err.message || 'Submission failed. Please tap retry.');
       } else {
-        setSubmitError(err.message || 'Network error submitting attendance.');
+        setSubmitError('Network failure connecting to attendance server.');
       }
     } finally {
       setSubmitting(false);
@@ -144,7 +189,7 @@ export const AttendVideoPage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col items-center">
-      {/* Header with Step 3 (Submit) */}
+      {/* Header with Step 4 (Submit) */}
       <Header
         currentStep="submit"
         courseCode={attempt?.session?.course_code}
@@ -152,7 +197,7 @@ export const AttendVideoPage: React.FC = () => {
       />
 
       <div className="w-full max-w-sm px-4 py-3 flex-1 flex flex-col">
-        {/* Video Player Card */}
+        {/* Video Card */}
         <div className="w-full bg-white rounded-3xl p-5 shadow-sm border border-slate-200/80 mb-4">
           <div className="text-center mb-3">
             <h2 className="text-base font-bold text-slate-900 tracking-tight">
@@ -163,70 +208,104 @@ export const AttendVideoPage: React.FC = () => {
             </p>
           </div>
 
-          {/* Video Mock/HTML5 Player */}
+          {/* Interactive HTML5 Video / SVG Animation Player (Fixes QA-10) */}
           <div className="relative w-full aspect-video rounded-2xl overflow-hidden bg-slate-950 border border-slate-200 shadow-inner flex items-center justify-center">
-            {/* Visual Instructional Poster */}
-            <div className="absolute inset-0 bg-gradient-to-tr from-[#1E40AF] via-slate-900 to-blue-900 flex flex-col items-center justify-center p-4 text-center">
-              <div className="w-12 h-12 rounded-full bg-blue-600/80 text-white flex items-center justify-center mb-2 shadow-lg ring-4 ring-white/10">
-                <Play className="w-5 h-5 ml-0.5 fill-white" />
-              </div>
-              <p className="text-xs font-bold text-white tracking-wide">
-                ADUN Academic Ethics Brief
-              </p>
-              <p className="text-[10px] text-blue-200/80 mt-0.5">
-                Attendance Policies & Student Code of Conduct
-              </p>
-            </div>
-          </div>
+            {/* Animated SVG Guidelines Illustration */}
+            <svg
+              className="w-full h-full"
+              viewBox="0 0 320 180"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <defs>
+                <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stopColor="#1E40AF" />
+                  <stop offset="50%" stopColor="#0F172A" />
+                  <stop offset="100%" stopColor="#1E3A8A" />
+                </linearGradient>
+                <linearGradient id="glowGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stopColor="#60A5FA" stopOpacity="0.8" />
+                  <stop offset="100%" stopColor="#3B82F6" stopOpacity="0.2" />
+                </linearGradient>
+              </defs>
+              <rect width="320" height="180" fill="url(#bgGrad)" />
 
-          <div className="mt-3 flex items-start gap-2 bg-blue-50/70 border border-blue-100 rounded-xl p-3 text-[11px] text-blue-950">
-            <Info className="w-4 h-4 text-[#1E40AF] shrink-0 mt-0.5" />
-            <span>
-              By signing in, you affirm your active participation in this lecture session under Admiralty University of Nigeria academic regulations.
-            </span>
-          </div>
+              {/* Pulsing rings */}
+              <circle cx="160" cy="80" r="45" fill="none" stroke="rgba(147, 197, 253, 0.2)" strokeWidth="2">
+                <animate attributeName="r" values="35;50;35" dur="4s" repeatCount="indefinite" />
+                <animate attributeName="opacity" values="0.6;0.2;0.6" dur="4s" repeatCount="indefinite" />
+              </circle>
 
-          {/* Confirmation Checkbox */}
-          <div className="mt-4 pt-3 border-t border-slate-100">
-            <label className="flex items-start gap-3 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={hasWatched}
-                onChange={(e) => setHasWatched(e.target.checked)}
-                className="mt-0.5 w-4 h-4 rounded text-[#1E40AF] focus:ring-[#1E40AF] border-slate-300"
+              <circle cx="160" cy="80" r="30" fill="url(#glowGrad)" />
+
+              {/* Academic emblem icon */}
+              <path
+                d="M160 65 L178 74 L160 83 L142 74 Z M147 79 L147 89 Q160 96 173 89 L173 79"
+                fill="none"
+                stroke="#FFFFFF"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
               />
-              <span className="text-xs font-semibold text-slate-700 leading-snug">
-                I have watched and understand the lecture attendance instruction
-              </span>
-            </label>
+
+              {/* Text label */}
+              <text
+                x="160"
+                y="135"
+                textAnchor="middle"
+                fill="#FFFFFF"
+                fontSize="12"
+                fontWeight="bold"
+                letterSpacing="0.5"
+              >
+                ADUN ACADEMIC INTEGRITY
+              </text>
+              <text
+                x="160"
+                y="152"
+                textAnchor="middle"
+                fill="#93C5FD"
+                fontSize="9"
+                fontWeight="500"
+              >
+                Official Verification Policy
+              </text>
+            </svg>
+          </div>
+
+          <div className="mt-3.5 flex items-start gap-2 bg-blue-50/70 p-3 rounded-xl border border-blue-100 text-xs text-blue-950">
+            <Info className="w-4 h-4 text-[#1E40AF] shrink-0 mt-0.5" />
+            <p className="leading-snug">
+              By confirming, you certify that you are physically in attendance and using your own registered personal device.
+            </p>
           </div>
         </div>
 
         {/* Error Banner */}
         {submitError && (
-          <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2 text-xs text-red-800 mb-4 animate-shake">
+          <div className="mb-4 p-3.5 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-2.5 text-xs text-red-800">
             <ShieldAlert className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-            <span className="flex-1 font-medium">{submitError}</span>
+            <div className="flex-1">
+              <p className="font-semibold">{submitError}</p>
+            </div>
           </div>
         )}
 
-        {/* Submit Attendance CTA */}
-        <div className="mt-auto pb-4">
+        {/* SUBMIT BUTTON IS ALWAYS ENABLED (Fixes QA-10, G3) */}
+        <div className="mt-auto pt-2 pb-4">
           <button
-            onClick={handleSubmit}
-            disabled={!hasWatched || submitting}
             type="button"
-            className="w-full flex items-center justify-center gap-2 bg-[#1E40AF] hover:bg-blue-800 active:bg-blue-900 disabled:bg-slate-200 disabled:text-slate-400 text-white font-semibold text-sm py-3.5 px-4 rounded-2xl shadow-md transition-all active:scale-[0.99]"
+            onClick={handleSubmit}
+            disabled={submitting}
+            className="w-full flex items-center justify-center gap-2 bg-[#1E40AF] hover:bg-blue-800 active:bg-blue-900 disabled:bg-slate-300 text-white font-semibold text-xs py-4 px-4 rounded-xl shadow-md transition-all active:scale-[0.99]"
           >
             {submitting ? (
               <>
-                <Loader2 className="w-4 h-4 animate-spin text-white" />
-                Recording your attendance...
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Recording verified attendance...</span>
               </>
             ) : (
               <>
-                <CheckCircle2 className="w-4 h-4" />
-                Confirm & Record Attendance
+                <span>Confirm & Record Attendance</span>
                 <ArrowRight className="w-4 h-4" />
               </>
             )}
