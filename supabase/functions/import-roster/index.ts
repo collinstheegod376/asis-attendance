@@ -98,7 +98,7 @@ Deno.serve(async (req: Request) => {
     // 4. Verify course authorization (Admin or owning Lecturer)
     const { data: course, error: courseErr } = await supabase
       .from('courses')
-      .select('id, lecturer_id, status, course_code')
+      .select('id, lecturer_id, status, code')
       .eq('id', courseId)
       .maybeSingle();
 
@@ -196,7 +196,7 @@ Deno.serve(async (req: Request) => {
 
     // 7. Validate each row against verified students_master directory
     const acceptedMatrics: string[] = [];
-    const rosterInserts: { course_id: string; student_id: string }[] = [];
+    const rosterInserts: { course_id: string; student_id: string; uploaded_by: string }[] = [];
     const rejected: { row: number; matric?: string; reason: string }[] = [];
     const seenStudentIds = new Set<string>();
 
@@ -231,6 +231,7 @@ Deno.serve(async (req: Request) => {
       rosterInserts.push({
         course_id: courseId,
         student_id: studentId,
+        uploaded_by: dbUser.id,
       });
     }
 
