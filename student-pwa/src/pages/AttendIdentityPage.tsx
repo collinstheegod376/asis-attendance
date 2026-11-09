@@ -160,8 +160,7 @@ export const AttendIdentityPage: React.FC = () => {
           }
 
           if (err.code === 'NOT_ELIGIBLE' || err.status === 404) {
-            clearAttemptState();
-            navigate('/not-enrolled', { replace: true });
+            setErrorBanner(err.message || 'Matriculation number not found in course roster. Please double-check your matric number.');
             return;
           }
 
@@ -188,7 +187,7 @@ export const AttendIdentityPage: React.FC = () => {
     [attempt, foundStudent, navigate]
   );
 
-  // Debounce matric input change (400ms)
+  // Debounce matric input change - auto-lookup only for complete matriculation numbers
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = normalizeMatric(e.target.value);
     setMatricInput(val);
@@ -200,10 +199,12 @@ export const AttendIdentityPage: React.FC = () => {
       clearTimeout(debounceTimerRef.current);
     }
 
-    if (val.length >= 5) {
+    // Only auto-trigger lookup if it matches a complete ADUN matriculation pattern (at least 12 chars ending in digits)
+    const isCompleteMatric = /^ADUN\/[A-Z0-9/]+\/\d+$/i.test(val) && val.length >= 12;
+    if (isCompleteMatric) {
       debounceTimerRef.current = setTimeout(() => {
         performLookup(val);
-      }, 400);
+      }, 600);
     }
   };
 
@@ -385,6 +386,14 @@ export const AttendIdentityPage: React.FC = () => {
                     type="text"
                     value={matricInput}
                     onChange={handleInputChange}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (matricInput.trim().length >= 5) {
+                          performLookup(matricInput);
+                        }
+                      }
+                    }}
                     placeholder="e.g. ADUN/FS/COM/25/001"
                     disabled={loading || Boolean(rateLimitedUntil)}
                     autoCapitalize="characters"
@@ -399,7 +408,7 @@ export const AttendIdentityPage: React.FC = () => {
                   )}
                 </div>
                 <p className="text-[11px] text-slate-400 mt-1.5">
-                  Lookup is automatic as you type
+                  Enter your matric number and click Verify (or press Enter)
                 </p>
               </div>
 
