@@ -1,0 +1,36 @@
+services:
+  reverse-proxy:
+    image: nginx:1.27-alpine
+    container_name: adun-attendance-proxy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/nginx.conf:/etc/nginx/nginx.conf:ro
+      - student-pwa-dist:/var/www/student-pwa:ro
+      - admin-portal-dist:/var/www/admin-portal:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - student-pwa
+      - admin-portal
+
+  student-pwa:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.student-pwa
+    container_name: adun-student-pwa
+    volumes:
+      - student-pwa-dist:/app/dist
+
+  admin-portal:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.admin-portal
+    container_name: adun-admin-portal
+    volumes:
+      - admin-portal-dist:/app/dist
+
+volumes:
+  student-pwa-dist:
+  admin-portal-dist:

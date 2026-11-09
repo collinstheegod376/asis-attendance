@@ -1,0 +1,12 @@
+services:
+  local-proxy:
+    image: nginx:1.27-alpine
+    container_name: adun-local-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/nginx.local.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/certs:/etc/nginx/certs:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

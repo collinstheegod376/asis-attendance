@@ -1,0 +1,93 @@
+# ==============================================================================
+# ADUN Attendance System - Production Caddyfile Configuration
+# Automated ACME Let's Encrypt TLS & Edge Function Reverse Proxy
+# ==============================================================================
+
+{
+    email admin@adun.edu.ng
+    admin off
+}
+
+# ------------------------------------------------------------------------------
+# 1. Student Mobile PWA & First-Party Edge Function API
+# ------------------------------------------------------------------------------
+attendance.adun.edu.ng {
+    encode zstd gzip
+
+    # Security Headers
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(self), geolocation=(self), microphone=()"
+    }
+
+    # First-Party API Proxy to Supabase Edge Functions (v1)
+    handle_path /api/* {
+        reverse_proxy https://ijfljngylbzwyyikivob.supabase.co {
+            header_up Host ijfljngylbzwyyikivob.supabase.co
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+
+            # Prepend /functions/v1/ to the forwarded path
+            rewrite /functions/v1{path}
+
+            transport http {
+                tls
+                tls_server_name ijfljngylbzwyyikivob.supabase.co
+            }
+        }
+    }
+
+    # Static Assets Caching
+    @assets path /assets/*
+    header @assets Cache-Control "public, max-age=31536000, immutable"
+
+    # Service Worker & Manifest Cache Bypass
+    @sw path /sw.js /registerSW.js /manifest.webmanifest
+    header @sw Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+
+    # Static file serving & SPA fallback
+    root * /var/www/student-pwa
+    file_server
+    try_files {path} /index.html
+}
+
+# ------------------------------------------------------------------------------
+# 2. Admin & Lecturer Web Portal (Isolated Host)
+# ------------------------------------------------------------------------------
+admin.attendance.adun.edu.ng {
+    encode zstd gzip
+
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    handle_path /api/* {
+        reverse_proxy https://ijfljngylbzwyyikivob.supabase.co {
+            header_up Host ijfljngylbzwyyikivob.supabase.co
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+
+            rewrite /functions/v1{path}
+
+            transport http {
+                tls
+                tls_server_name ijfljngylbzwyyikivob.supabase.co
+            }
+        }
+    }
+
+    @assets path /assets/*
+    header @assets Cache-Control "public, max-age=31536000, immutable"
+
+    root * /var/www/admin-portal
+    file_server
+    try_files {path} /index.html
+}

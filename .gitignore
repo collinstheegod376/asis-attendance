@@ -1,5 +1,6 @@
-# Secrets and Tokens
-git_token.txt
+# Secrets, Tokens, and Service Credentials
+git_token*
+service-role*.json
 *.token
 *.key
 *.pdf
@@ -18,10 +19,9 @@ node_modules/
 dist/
 build/
 
-# Local Environment Variables
-.env
-.env.local
-.env.*.local
+# Local Environment Variables and Secrets
+.env*
+*.local
 *.env
 
 # TypeScript build info

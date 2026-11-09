@@ -1,0 +1,20 @@
+{
+  "name": "adun-attendance-system",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Admiralty University of Nigeria - Mobile Attendance Verification System & Administrative Portal",
+  "scripts": {
+    "test": "node scripts/secret-scan.cjs && node tests/verify_all_backend.js && node tests/edge_functions_simulation.test.js && node tests/e2e/run_all_e2e.cjs && node tests/load/run_load_test.cjs",
+    "test:backend": "node tests/verify_all_backend.js && node tests/edge_functions_simulation.test.js",
+    "test:e2e": "node tests/e2e/run_all_e2e.cjs",
+    "test:playwright": "playwright test",
+    "test:load": "node tests/load/run_load_test.cjs",
+    "scan:secrets": "node scripts/secret-scan.cjs",
+    "build": "npm run build --prefix student-pwa && npm run build --prefix admin-portal",
+    "build:student": "npm run build --prefix student-pwa",
+    "build:admin": "npm run build --prefix admin-portal"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0"
+  }
+}

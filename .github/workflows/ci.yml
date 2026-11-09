@@ -1,0 +1,70 @@
+name: ADUN Attendance CI & Verification Pipeline
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  security-and-secrets:
+    name: Secret Hygiene & Bundle Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          cd student-pwa && npm ci
+          cd ../admin-portal && npm ci
+
+      - name: Build applications
+        run: |
+          cd student-pwa && npm run build
+          cd ../admin-portal && npm run build
+
+      - name: Run Secret & Bundle Leak Scanner
+        run: node scripts/secret-scan.cjs
+
+  backend-verification:
+    name: Database RLS & Edge Functions Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run Backend 18-Item Verification
+        run: node tests/verify_all_backend.js
+
+      - name: Run Edge Functions Behavioral Simulation
+        run: node tests/edge_functions_simulation.test.js
+
+  integration-and-load:
+    name: End-to-End & Concurrency Load Test
+    runs-on: ubuntu-latest
+    needs: [security-and-secrets, backend-verification]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run All 8 E2E Test Suites
+        run: node tests/e2e/run_all_e2e.cjs
+
+      - name: Run 120-Student Concurrency Load Simulation
+        run: node tests/load/run_load_test.cjs
