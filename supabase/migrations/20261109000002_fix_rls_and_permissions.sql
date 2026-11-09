@@ -315,16 +315,16 @@ CREATE POLICY "authenticated_select_settings" ON public.settings
 
 -- STEP 5: IDEMPOTENT REMOVAL OF ALL DEMO SEED DATA
 DELETE FROM public.attendance_records
-WHERE session_id IN (SELECT id FROM public.lecture_sessions WHERE course_id IN (SELECT id FROM public.courses WHERE course_code = 'ADUN CYB 201'));
+WHERE session_id IN (SELECT id FROM public.lecture_sessions WHERE course_id IN (SELECT id FROM public.courses WHERE code = 'ADUN CYB 201'));
 
 DELETE FROM public.course_roster
-WHERE course_id IN (SELECT id FROM public.courses WHERE course_code = 'ADUN CYB 201');
+WHERE course_id IN (SELECT id FROM public.courses WHERE code = 'ADUN CYB 201');
 
 DELETE FROM public.lecture_sessions
-WHERE course_id IN (SELECT id FROM public.courses WHERE course_code = 'ADUN CYB 201');
+WHERE course_id IN (SELECT id FROM public.courses WHERE code = 'ADUN CYB 201');
 
 DELETE FROM public.courses
-WHERE course_code = 'ADUN CYB 201';
+WHERE code = 'ADUN CYB 201';
 
 DELETE FROM public.users
 WHERE username = 'tega';
