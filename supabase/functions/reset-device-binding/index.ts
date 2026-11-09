@@ -1,135 +1,157 @@
 /**
  * Edge Function: reset-device-binding
- * Authenticated endpoint for Lecturers and Admins to reset device locks for a student.
- * Enforces mandatory forensic reset reason and hourly rate limiting (max 50 resets/hour per actor).
+ * Fixes: SEC-15
+ *
+ * Authenticated endpoint for Admins and Lecturers to reset device locks.
+ * Strictly verifies identity via Supabase Auth JWT (userClient.auth.getUser()).
+ * NEVER trusts or reads actor_id from request body.
+ * Enforces course roster authorization and role-based rate limits.
  */
-import { handleCors, jsonResponse, errorResponse } from '../_shared/cors.ts';
+import { getCorsHeaders, handleCors } from '../_shared/cors.ts';
 import { getServiceClient, getUserClient } from '../_shared/supabaseClient.ts';
 
 declare const Deno: any;
 
-const MAX_RESETS_PER_HOUR = 50;
+function isValidUuid(id: unknown): boolean {
+  if (typeof id !== 'string') return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id.trim());
+}
 
 Deno.serve(async (req: Request) => {
   const cors = handleCors(req);
   if (cors) return cors;
 
+  const baseHeaders = getCorsHeaders(req);
+
   if (req.method !== 'POST') {
-    return errorResponse('METHOD_NOT_ALLOWED', 'POST method required', 405, {}, req);
+    return new Response(JSON.stringify({ error: 'METHOD_NOT_ALLOWED' }), {
+      status: 405,
+      headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+    });
   }
 
   try {
+    // 1. Mandatory Authorization Header Check (SEC-15)
     const authHeader = req.headers.get('Authorization');
-    if (!authHeader) {
-      return errorResponse('UNAUTHORIZED', 'Missing Authorization header', 401, {}, req);
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return new Response(JSON.stringify({
+        error: 'UNAUTHORIZED',
+        message: 'Missing or malformed Authorization header.',
+      }), {
+        status: 401,
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
-    const body = await req.json().catch(() => ({}));
-    const studentId = body?.student_id;
-    const reason = body?.reason;
-    const actorId = body?.actor_id;
+    // 2. Authenticate caller strictly via Supabase Auth service
+    const userClient = getUserClient(authHeader);
+    const { data: { user }, error: authErr } = await userClient.auth.getUser();
 
-    // 1. Mandatory Parameter Validation
-    if (!studentId) {
-      return errorResponse('BAD_REQUEST', 'student_id is required', 400, {}, req);
-    }
-
-    if (!reason || typeof reason !== 'string' || !reason.trim()) {
-      return errorResponse(
-        'REASON_REQUIRED',
-        'A reason for the reset is mandatory for forensic auditing and institutional record keeping.',
-        400,
-        {},
-        req
-      );
+    if (authErr || !user) {
+      return new Response(JSON.stringify({
+        error: 'UNAUTHORIZED',
+        message: 'Invalid, revoked, or expired auth token.',
+      }), {
+        status: 401,
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
     const supabase = getServiceClient();
-    let effectiveActorId = actorId;
 
-    // 2. Authenticate and resolve actor
-    if (!effectiveActorId) {
-      const userClient = getUserClient(authHeader);
-      const {
-        data: { user },
-        error: authErr,
-      } = await userClient.auth.getUser();
+    // 3. Resolve caller profile in users table
+    const { data: dbUser, error: dbUserErr } = await supabase
+      .from('users')
+      .select('id, role, status')
+      .or(`auth_id.eq.${user.id},id.eq.${user.id}`)
+      .eq('status', 'active')
+      .maybeSingle();
 
-      if (authErr || !user) {
-        return errorResponse('UNAUTHORIZED', 'Invalid credentials or expired session', 401, {}, req);
-      }
-
-      const { data: dbUser, error: dbUserErr } = await supabase
-        .from('users')
-        .select('id, role, status')
-        .or(`auth_id.eq.${user.id},id.eq.${user.id}`)
-        .eq('status', 'active')
-        .maybeSingle();
-
-      if (dbUserErr || !dbUser) {
-        return errorResponse('FORBIDDEN', 'User account not authorized or inactive', 403, {}, req);
-      }
-      effectiveActorId = dbUser.id;
-    } else {
-      // Verify actor exists and is active
-      const { data: dbUser } = await supabase
-        .from('users')
-        .select('id, role, status')
-        .eq('id', effectiveActorId)
-        .eq('status', 'active')
-        .maybeSingle();
-
-      if (!dbUser) {
-        return errorResponse('FORBIDDEN', 'Actor account not authorized', 403, {}, req);
-      }
+    if (dbUserErr || !dbUser) {
+      return new Response(JSON.stringify({
+        error: 'FORBIDDEN',
+        message: 'Caller account is not registered or is inactive.',
+      }), {
+        status: 403,
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
-    // 3. Rate Limit Enforcement: Max 50 resets per hour per admin account
-    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    const { count, error: countErr } = await supabase
-      .from('device_events')
-      .select('*', { count: 'exact', head: true })
-      .eq('event_type', 'admin_reset')
-      .gte('created_at', oneHourAgo)
-      .filter('metadata->>actor_id', 'eq', effectiveActorId);
+    // 4. Validate parameters (Reject or ignore any body.actor_id or body.role)
+    const body = await req.json().catch(() => ({}));
+    const studentId = body?.student_id;
+    const reason = body?.reason;
 
-    if (countErr) {
-      console.warn('Could not query rate limit count from device_events:', countErr.message);
-    } else if (count !== null && count >= MAX_RESETS_PER_HOUR) {
-      return jsonResponse(
-        {
-          success: false,
-          error: 'RATE_LIMIT_EXCEEDED',
-          message: `Rate limit exceeded: maximum ${MAX_RESETS_PER_HOUR} device resets per hour per account.`,
-          hourly_reset_count: count,
-          limit: MAX_RESETS_PER_HOUR,
-        },
-        429,
-        {},
-        req
-      );
+    if (!studentId || !isValidUuid(studentId)) {
+      return new Response(JSON.stringify({
+        error: 'BAD_REQUEST',
+        message: 'Valid student_id UUID is required.',
+      }), {
+        status: 400,
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
-    // 4. Execute atomic reset RPC
-    const { data, error } = await supabase.rpc('rpc_reset_device_binding', {
+    if (!reason || typeof reason !== 'string' || !reason.trim()) {
+      return new Response(JSON.stringify({
+        error: 'REASON_REQUIRED',
+        message: 'A detailed forensic reason for the reset is required.',
+      }), {
+        status: 400,
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // 5. Execute atomic database RPC with verified actor identity
+    const { data: result, error: rpcErr } = await supabase.rpc('rpc_reset_device_binding', {
       p_student_id: studentId,
-      p_actor_id: effectiveActorId,
+      p_actor_id: dbUser.id,
+      p_actor_role: dbUser.role,
       p_reason: reason.trim(),
     });
 
-    if (error) {
-      console.error('RPC Error in rpc_reset_device_binding:', error);
-      return errorResponse('DATABASE_ERROR', error.message, 500, {}, req);
+    if (rpcErr || !result) {
+      console.error('RPC Error in rpc_reset_device_binding:', rpcErr);
+      return new Response(JSON.stringify({
+        error: 'DATABASE_ERROR',
+        message: rpcErr?.message || 'Database error occurred during device reset.',
+      }), {
+        status: 500,
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
-    const result = data as Record<string, unknown>;
     if (!result.success) {
-      return jsonResponse(result, 400, {}, req);
+      const errCode = (result.error as string) || 'RESET_FAILED';
+      const status =
+        errCode === 'FORBIDDEN'
+          ? 403
+          : errCode === 'RATE_LIMIT_EXCEEDED'
+          ? 429
+          : 400;
+
+      return new Response(JSON.stringify({
+        error: errCode,
+        message: result.message,
+      }), {
+        status,
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
-    return jsonResponse(result, 200, {}, req);
+    return new Response(JSON.stringify({
+      success: true,
+      reset_count: result.reset_count ?? 1,
+      student_id: studentId,
+    }), {
+      status: 200,
+      headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+    });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Unknown server error';
-    return errorResponse('INTERNAL_SERVER_ERROR', message, 500, {}, req);
+    const message = err instanceof Error ? err.message : 'Unknown internal error';
+    return new Response(JSON.stringify({ error: 'INTERNAL_SERVER_ERROR', message }), {
+      status: 500,
+      headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+    });
   }
 });

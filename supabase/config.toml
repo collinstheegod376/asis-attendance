@@ -31,3 +31,28 @@ file_size_limit = "50MiB"
 public = false
 file_size_limit = "5MiB"
 allowed_mime_types = ["image/jpeg", "image/png", "image/webp"]
+
+[functions.validate-session-token]
+verify_jwt = false
+
+[functions.lookup-matric]
+verify_jwt = false
+
+[functions.device-check]
+verify_jwt = false
+
+[functions.verify-location]
+verify_jwt = false
+
+[functions.upload-selfie]
+verify_jwt = false
+
+[functions.submit-attendance]
+verify_jwt = false
+
+[functions.reset-device-binding]
+verify_jwt = false
+
+[functions.import-roster]
+verify_jwt = false
+

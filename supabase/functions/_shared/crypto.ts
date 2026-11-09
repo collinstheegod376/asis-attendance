@@ -19,7 +19,7 @@ export async function sha256Hex(input: string): Promise<string> {
  */
 export function normalizeMatric(matric: string): string {
   if (!matric) return '';
-  return matric.trim().toUpperCase();
+  return matric.trim().toUpperCase().replace(/\s+/g, '');
 }
 
 /**

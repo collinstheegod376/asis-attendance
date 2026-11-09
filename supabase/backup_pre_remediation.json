@@ -1,0 +1,40 @@
+{
+  "users": [
+    {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "role": "admin",
+      "username": "admin",
+      "email": "admin@adun.edu.ng",
+      "password_hash": "$2a$10$Wpkpj42Tgeoxddk.MoTkO.46w1j//UL7p1alQLn.4mgILDJvtOb4e",
+      "auth_id": null,
+      "status": "active",
+      "must_change_password": true,
+      "created_at": "2026-11-08T23:04:14.235509+00:00",
+      "deleted_at": null
+    }
+  ],
+  "students_master": [],
+  "courses": [],
+  "course_roster": [],
+  "lecture_sessions": [],
+  "attendance_records": [],
+  "device_bindings": [],
+  "device_events": [],
+  "audit_logs": [],
+  "settings": [
+    {
+      "id": 1,
+      "location_mode": "evidence_only",
+      "campus_boundary_geojson": null,
+      "location_accuracy_threshold_m": 50,
+      "default_session_duration_minutes": 60,
+      "max_session_duration_minutes": 180,
+      "selfie_retention_days": 180,
+      "grace_minutes": 10,
+      "max_active_courses_per_lecturer": 9,
+      "rate_limit_token_per_minute": 60,
+      "rate_limit_matric_per_minute": 30,
+      "updated_at": "2026-11-08T23:04:14.235509+00:00"
+    }
+  ]
+}
