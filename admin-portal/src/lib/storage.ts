@@ -10,6 +10,7 @@ import {
   AuditLog, 
   SystemSettings 
 } from '../types';
+import { supabase, isSupabaseConfigured } from './supabase';
 
 const STORAGE_KEYS = {
   USERS: 'adun_users',
@@ -27,7 +28,7 @@ const STORAGE_KEYS = {
 
 // Default seed admin and settings ONLY (STRICTLY NO DEMO STUDENTS, COURSES OR SESSIONS)
 const SEED_ADMIN: User = {
-  id: 'usr_admin_001',
+  id: '00000000-0000-0000-0000-000000000001',
   role: 'admin',
   username: 'admin',
   password: 'admin', // Enforces change password on first login
@@ -58,17 +59,6 @@ const DEFAULT_SETTINGS: SystemSettings = {
   updated_by: 'System Seed',
 };
 
-function pushKeysToServer(payload: Record<string, any>): void {
-  if (typeof window === 'undefined') return;
-  fetch('/api/local-sync', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  }).catch(() => {
-    // Ignore when running outside local dev server
-  });
-}
-
 function getItem<T>(key: string, defaultValue: T): T {
   try {
     const raw = localStorage.getItem(key);
@@ -80,12 +70,9 @@ function getItem<T>(key: string, defaultValue: T): T {
   }
 }
 
-function setItem<T>(key: string, value: T, skipServerPush = false): void {
+function setItem<T>(key: string, value: T): void {
   try {
     localStorage.setItem(key, JSON.stringify(value));
-    if (!skipServerPush) {
-      pushKeysToServer({ [key]: value });
-    }
   } catch (e) {
     console.error(`Failed to write to localStorage key: ${key}`, e);
   }
@@ -98,92 +85,112 @@ export class AppStorage {
     setItem(key, value);
   }
 
+  static async syncFromSupabase(): Promise<void> {
+    if (!isSupabaseConfigured || !supabase) return;
+    try {
+      const [
+        usersRes,
+        studentsRes,
+        coursesRes,
+        rosterRes,
+        sessionsRes,
+        attendanceRes,
+        bindingsRes,
+        eventsRes,
+        settingsRes,
+        logsRes,
+      ] = await Promise.all([
+        supabase.from('users').select('*'),
+        supabase.from('students_master').select('*'),
+        supabase.from('courses').select('*'),
+        supabase.from('course_roster').select('*'),
+        supabase.from('lecture_sessions').select('*'),
+        supabase.from('attendance_records').select('*'),
+        supabase.from('device_bindings').select('*'),
+        supabase.from('device_events').select('*'),
+        supabase.from('settings').select('*').limit(1),
+        supabase.from('audit_logs').select('*').limit(200),
+      ]);
+
+      if (usersRes.data && usersRes.data.length > 0) {
+        const mappedUsers: User[] = usersRes.data.map((u: any) => ({
+          id: u.id,
+          role: u.role,
+          username: u.username,
+          password: 'admin',
+          email: u.email,
+          name: u.username === 'admin' ? 'System Administrator' : (u.username === 'tega' ? 'Mr Tega' : u.username),
+          department: u.role === 'admin' ? 'ICT & Academic Affairs' : 'Computer Science',
+          staff_id: `ADUN/${u.role === 'admin' ? 'ADM' : 'LEC'}/001`,
+          status: u.status,
+          must_change_password: u.must_change_password,
+          created_at: u.created_at,
+        }));
+        setItem(STORAGE_KEYS.USERS, mappedUsers);
+      }
+
+      if (studentsRes.data && studentsRes.data.length > 0) {
+        setItem(STORAGE_KEYS.STUDENTS_MASTER, studentsRes.data);
+      }
+
+      if (coursesRes.data) {
+        setItem(STORAGE_KEYS.COURSES, coursesRes.data);
+      }
+
+      if (rosterRes.data && studentsRes.data) {
+        const studentMap = new Map((studentsRes.data || []).map((s: any) => [s.id, s]));
+        const mappedRoster: CourseRoster[] = rosterRes.data.map((r: any) => {
+          const s = studentMap.get(r.student_id);
+          return {
+            id: r.id,
+            course_id: r.course_id,
+            student_id: r.student_id,
+            matric_no: s?.matric_no || '',
+            student_name: s ? `${s.surname} ${s.first_name} ${s.middle_name || ''}`.trim() : 'Enrolled Student',
+            program: s?.program || 'Computer Science',
+            level: String(s?.level || '200'),
+            uploaded_by: r.uploaded_by,
+            uploaded_at: r.uploaded_at,
+          };
+        });
+        setItem(STORAGE_KEYS.COURSE_ROSTER, mappedRoster);
+      }
+
+      if (sessionsRes.data) {
+        setItem(STORAGE_KEYS.SESSIONS, sessionsRes.data);
+      }
+
+      if (attendanceRes.data) {
+        setItem(STORAGE_KEYS.ATTENDANCE, attendanceRes.data);
+      }
+
+      if (bindingsRes.data) {
+        setItem(STORAGE_KEYS.DEVICE_BINDINGS, bindingsRes.data);
+      }
+
+      if (eventsRes.data) {
+        setItem(STORAGE_KEYS.DEVICE_EVENTS, eventsRes.data);
+      }
+
+      if (settingsRes.data && settingsRes.data[0]) {
+        setItem(STORAGE_KEYS.SETTINGS, { ...DEFAULT_SETTINGS, ...settingsRes.data[0] });
+      }
+
+      if (logsRes.data) {
+        setItem(STORAGE_KEYS.AUDIT_LOGS, logsRes.data);
+      }
+    } catch (e) {
+      console.warn('Supabase sync warning:', e);
+    }
+  }
+
   static startServerSync(): void {
     if (syncStarted || typeof window === 'undefined') return;
     syncStarted = true;
 
-    const runSync = async () => {
-      try {
-        const res = await fetch('/api/local-sync');
-        if (!res.ok) return;
-        const serverDb: Record<string, any> = await res.json();
-
-        const keysToPush: Record<string, any> = {};
-
-        // 1. Push any local keys that are missing or fuller than serverDb
-        const allKeys = [
-          STORAGE_KEYS.USERS,
-          STORAGE_KEYS.STUDENTS_MASTER,
-          STORAGE_KEYS.COURSES,
-          STORAGE_KEYS.COURSE_ROSTER,
-          STORAGE_KEYS.SESSIONS,
-          STORAGE_KEYS.ATTENDANCE,
-          STORAGE_KEYS.DEVICE_BINDINGS,
-          STORAGE_KEYS.DEVICE_EVENTS,
-          STORAGE_KEYS.AUDIT_LOGS,
-          STORAGE_KEYS.SETTINGS,
-        ];
-
-        for (const k of allKeys) {
-          const localRaw = localStorage.getItem(k);
-          if (!localRaw) continue;
-          const localVal = JSON.parse(localRaw);
-          const serverVal = serverDb[k];
-
-          if (serverVal === undefined) {
-            keysToPush[k] = localVal;
-          } else if (Array.isArray(localVal) && Array.isArray(serverVal)) {
-            if (localVal.length > 0 && serverVal.length === 0) {
-              keysToPush[k] = localVal;
-            }
-          }
-        }
-
-        if (Object.keys(keysToPush).length > 0) {
-          pushKeysToServer(keysToPush);
-        }
-
-        // 2. Pull student-generated records (Attendance, Device Bindings, Device Events, Audit Logs) from server into localStorage
-        const mergeArrayKey = (key: string) => {
-          const serverArr = serverDb[key];
-          if (!Array.isArray(serverArr) || serverArr.length === 0) return;
-          const localArr = getItem<any[]>(key, []);
-          const localMap = new Map(localArr.map((item: any) => [item.id, item]));
-          let changed = false;
-
-          for (const srvItem of serverArr) {
-            if (!srvItem || !srvItem.id) continue;
-            const existing = localMap.get(srvItem.id);
-            if (!existing) {
-              localArr.unshift(srvItem);
-              localMap.set(srvItem.id, srvItem);
-              changed = true;
-            } else if (
-              key === STORAGE_KEYS.DEVICE_BINDINGS &&
-              existing.last_seen_at !== srvItem.last_seen_at &&
-              existing.status === srvItem.status
-            ) {
-              Object.assign(existing, srvItem);
-              changed = true;
-            }
-          }
-
-          if (changed) {
-            setItem(key, localArr, true);
-          }
-        };
-
-        mergeArrayKey(STORAGE_KEYS.ATTENDANCE);
-        mergeArrayKey(STORAGE_KEYS.DEVICE_BINDINGS);
-        mergeArrayKey(STORAGE_KEYS.DEVICE_EVENTS);
-        mergeArrayKey(STORAGE_KEYS.AUDIT_LOGS);
-      } catch {
-        // Ignore offline errors
-      }
-    };
-
-    runSync();
-    setInterval(runSync, 2000);
+    // Direct Real-time Supabase sync
+    this.syncFromSupabase();
+    setInterval(() => this.syncFromSupabase(), 3000);
   }
 
   static init(): void {
