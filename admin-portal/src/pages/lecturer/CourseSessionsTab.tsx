@@ -26,6 +26,7 @@ import {
   formatToDateTimeLocalWAT,
 } from '../../lib/dateUtils';
 import { AdminService } from '../../services/adminService';
+import { getStudentPwaUrl } from '../../lib/studentPwaUrl';
 
 interface CourseSessionsTabProps {
   course: Course;
@@ -170,9 +171,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
   };
 
   const handleCopyLink = (session: LectureSession) => {
-    const host = window.location.origin.includes('localhost')
-      ? window.location.origin.replace(':5174', ':5173')
-      : window.location.origin;
+    const host = getStudentPwaUrl();
     const token = session.raw_token || session.id;
     const joinUrl = `${host}/join/${token}`;
     navigator.clipboard.writeText(joinUrl);

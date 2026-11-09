@@ -22,6 +22,7 @@ import { LecturerService } from '../../services/lecturerService';
 import { LectureSession, AttendanceRecord } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { formatWATTime } from '../../lib/dateUtils';
+import { getStudentPwaUrl } from '../../lib/studentPwaUrl';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 
 export const ClassroomProjectorView: React.FC = () => {
@@ -108,9 +109,7 @@ export const ClassroomProjectorView: React.FC = () => {
   useEffect(() => {
     if (!session) return;
 
-    const host = window.location.origin.includes('localhost')
-      ? window.location.origin.replace(':5174', ':5173')
-      : window.location.origin;
+    const host = getStudentPwaUrl();
     const token = session.raw_token || session.id;
     const joinUrl = `${host}/join/${token}`;
 
@@ -244,9 +243,7 @@ export const ClassroomProjectorView: React.FC = () => {
 
   const handleCopyLink = () => {
     if (!session) return;
-    const host = window.location.origin.includes('localhost')
-      ? window.location.origin.replace(':5174', ':5173')
-      : window.location.origin;
+    const host = getStudentPwaUrl();
     const token = session.raw_token || session.id;
     const joinUrl = `${host}/join/${token}`;
     navigator.clipboard.writeText(joinUrl);
@@ -298,9 +295,7 @@ export const ClassroomProjectorView: React.FC = () => {
     );
   }
 
-  const joinHost = window.location.origin.includes('localhost')
-    ? window.location.origin.replace(':5174', ':5173')
-    : window.location.origin;
+  const joinHost = getStudentPwaUrl();
   const token = session.raw_token || session.id;
   const joinUrl = `${joinHost}/join/${token}`;
 
