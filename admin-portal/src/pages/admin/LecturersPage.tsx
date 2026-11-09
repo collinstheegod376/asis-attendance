@@ -266,11 +266,11 @@ export const LecturersPage: React.FC = () => {
                                 : 'bg-blue-100 text-blue-800'
                             }`}
                           >
-                            {lecturer.name.charAt(0)}
+                            {(lecturer.name || lecturer.username || 'L').charAt(0).toUpperCase()}
                           </div>
                           <div>
                             <p className="font-semibold text-slate-900 leading-tight">
-                              {lecturer.name}
+                              {lecturer.name || lecturer.username || 'Lecturer'}
                             </p>
                             <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
                               <span>{lecturer.email}</span>

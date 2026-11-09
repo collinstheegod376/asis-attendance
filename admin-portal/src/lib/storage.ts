@@ -177,7 +177,12 @@ export class AppStorage {
       }
 
       if (logsRes.data) {
-        setItem(STORAGE_KEYS.AUDIT_LOGS, logsRes.data);
+        const userMap = new Map((usersRes.data || []).map((u: any) => [u.id, u.username === 'admin' ? 'System Administrator' : (u.username === 'tega' ? 'Mr Tega' : u.username)]));
+        const mappedLogs = logsRes.data.map((l: any) => ({
+          ...l,
+          actor_name: l.actor_name || userMap.get(l.actor_id) || l.metadata?.actor_name || (l.actor_role === 'admin' ? 'System Administrator' : (l.actor_role === 'lecturer' ? 'Lecturer' : 'System')),
+        }));
+        setItem(STORAGE_KEYS.AUDIT_LOGS, mappedLogs);
       }
     } catch (e) {
       console.warn('Supabase sync warning:', e);

@@ -339,34 +339,38 @@ export const AdminHomePage: React.FC = () => {
           />
         ) : (
           <div className="divide-y divide-slate-100 overflow-x-auto">
-            {recentAudits.map(log => (
-              <div key={log.id} className="py-3 flex items-center justify-between gap-4 text-xs">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-blue-50 text-blue-700 flex items-center justify-center font-bold text-[10px] shrink-0">
-                    {log.actor_name.charAt(0)}
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold text-slate-900">{log.action}</span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 uppercase font-mono">
-                        {log.actor_role}
-                      </span>
+            {recentAudits.map(log => {
+              const actorDisplay = log.actor_name || log.actor_role || 'System';
+              const initial = actorDisplay.charAt(0).toUpperCase();
+              return (
+                <div key={log.id} className="py-3 flex items-center justify-between gap-4 text-xs">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-blue-50 text-blue-700 flex items-center justify-center font-bold text-[10px] shrink-0">
+                      {initial}
                     </div>
-                    <p className="text-slate-500 text-[11px] mt-0.5">
-                      By {log.actor_name} on {log.entity} {log.entity_id ? `(${log.entity_id})` : ''}
-                    </p>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-slate-900">{log.action}</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 uppercase font-mono">
+                          {log.actor_role}
+                        </span>
+                      </div>
+                      <p className="text-slate-500 text-[11px] mt-0.5">
+                        By {actorDisplay} on {log.entity} {log.entity_id ? `(${log.entity_id})` : ''}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="text-right text-slate-400 font-mono text-[11px] shrink-0">
+                    {new Date(log.created_at).toLocaleString('en-GB', {
+                      timeZone: 'Africa/Lagos',
+                      dateStyle: 'short',
+                      timeStyle: 'short',
+                    })}
                   </div>
                 </div>
-
-                <div className="text-right text-slate-400 font-mono text-[11px] shrink-0">
-                  {new Date(log.created_at).toLocaleString('en-GB', {
-                    timeZone: 'Africa/Lagos',
-                    dateStyle: 'short',
-                    timeStyle: 'short',
-                  })}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
