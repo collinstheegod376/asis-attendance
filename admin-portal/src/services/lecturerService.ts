@@ -103,6 +103,33 @@ export class LecturerService {
 
       const maxQuota = settings?.max_active_courses_per_lecturer || 9;
 
+      const courseIds = courses.map((c: any) => c.id);
+
+      // Fetch enrolled count and sessions count per course
+      const rosterCountMap = new Map<string, number>();
+      const sessionsCountMap = new Map<string, number>();
+
+      if (courseIds.length > 0) {
+        const [rostersRes, sessionsRes] = await Promise.all([
+          supabase
+            .from('course_roster')
+            .select('course_id')
+            .in('course_id', courseIds),
+          supabase
+            .from('lecture_sessions')
+            .select('course_id')
+            .in('course_id', courseIds),
+        ]);
+
+        (rostersRes.data || []).forEach((r: any) => {
+          rosterCountMap.set(r.course_id, (rosterCountMap.get(r.course_id) || 0) + 1);
+        });
+
+        (sessionsRes.data || []).forEach((s: any) => {
+          sessionsCountMap.set(s.course_id, (sessionsCountMap.get(s.course_id) || 0) + 1);
+        });
+      }
+
       const activeCourses: Course[] = [];
       const archivedCourses: Course[] = [];
 
@@ -114,6 +141,8 @@ export class LecturerService {
           lecturer_id: c.lecturer_id,
           status: c.status,
           created_at: c.created_at,
+          enrolled_count: rosterCountMap.get(c.id) || 0,
+          sessions_count: sessionsCountMap.get(c.id) || 0,
         };
         if (c.status === 'active') activeCourses.push(mapped);
         else archivedCourses.push(mapped);
@@ -146,6 +175,18 @@ export class LecturerService {
 
       if (error || !data) return null;
 
+      // Query enrolled_count and sessions_count
+      const [rosterRes, sessionsRes] = await Promise.all([
+        supabase
+          .from('course_roster')
+          .select('id', { count: 'exact', head: true })
+          .eq('course_id', courseId),
+        supabase
+          .from('lecture_sessions')
+          .select('id', { count: 'exact', head: true })
+          .eq('course_id', courseId),
+      ]);
+
       return {
         id: data.id,
         code: data.code,
@@ -153,6 +194,8 @@ export class LecturerService {
         lecturer_id: data.lecturer_id,
         status: data.status,
         created_at: data.created_at,
+        enrolled_count: rosterRes.count || 0,
+        sessions_count: sessionsRes.count || 0,
       };
     } catch (e) {
       console.error('getCourseById exception:', e);
