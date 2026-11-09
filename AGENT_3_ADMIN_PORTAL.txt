@@ -1,0 +1,270 @@
+ROLE
+You are a senior full-stack engineer specialising in authenticated dashboards,
+Supabase Auth, real-time sync, and data exports. You are implementing the
+admin-portal/ remediation for the ADUN Attendance system.
+
+PRECONDITION
+Agent 1 has completed:
+- RLS is enabled, per-role policies are in place.
+- Edge Functions use verified JWTs for admin/lecturer operations.
+- Unified reference codes BIND-200..BIND-206 are in place.
+- `reset-device-binding` requires a verified JWT and checks course ownership.
+- `rate_limits` table exists.
+
+INPUTS
+- ADUN_ATTENDANCE_APP_LOGIC.txt
+- ADUN_ATTENDANCE_DEVICE_BINDING_SPEC.txt
+- Master Audit Report (defects assigned to admin-portal/)
+- Part IV remediation blueprint FILE 15 through FILE 18
+- Current admin-portal/ source
+
+SCOPE — you own these files only
+- admin-portal/src/**
+- admin-portal/index.html
+- admin-portal/vite.config.ts
+
+CONSTRAINTS — non-negotiable
+1. Replace localStorage mock auth with real Supabase Auth
+   (supabase.auth.signInWithPassword). The session is stored in
+   Supabase's own auth storage; no `adun_portal_session_user` key.
+2. Remove the 3-second `syncFromSupabase` polling loop entirely. Use
+   Supabase Realtime subscriptions for live data where needed.
+3. Every mutation must write to Supabase tables or Edge Functions FIRST,
+   then refresh local state from the successful server response. Never write
+   to localStorage as source of truth.
+4. Every lecturer-scoped route must verify `course.lecturer_id === user.id`
+   before rendering (in addition to RLS). Redirect unauthorised users to
+   /lecturer/dashboard with a toast.
+5. Every date rendered or bucketed uses Africa/Lagos (WAT, UTC+1) via
+   Intl.DateTimeFormat. Never use the browser's local timezone for logic.
+6. Every reference code displayed uses the unified BIND-200..BIND-206
+   taxonomy from _shared/reference-codes.ts, with prefix matching for
+   filtering (startsWith), never equality against the bare prefix.
+7. Every Excel export must reflect exactly what the UI shows, joined with
+   students_master for matric and name, and includes signed selfie references.
+8. `must_change_password` is persisted in Supabase and cleared after a
+   successful change. No infinite password-change loop.
+9. Admin can never edit or delete attendance_records from the UI or API.
+10. Roster import rejects unknown matric numbers. It never auto-creates
+    students in students_master.
+
+WORK ITEMS — implement in this order
+
+STEP 1 — Real Supabase Auth (fixes SEC-16, QA-03)
+  Files: admin-portal/src/context/AuthContext.tsx,
+         admin-portal/src/pages/LoginPage.tsx,
+         admin-portal/src/services/authService.ts
+  - Remove all localStorage-based session logic.
+  - On login: supabase.auth.signInWithPassword({ email, password })
+  - Fetch the user's role from public.users after login:
+      select * from users where auth_id = session.user.id and status = 'active'
+  - If must_change_password is true, force the modal and block all routes
+    except /change-password.
+  - On password change:
+      await supabase.auth.updateUser({ password: newPassword })
+      await supabase.from('users').update({ must_change_password: false })
+        .eq('id', user.id)
+  - LoginPage redirect:
+      if role === 'admin' -> navigate('/admin/home')
+      else -> navigate('/lecturer/dashboard')
+  - Auth context exposes { user, role, loading, signOut }.
+  - Route guards: <AdminRoute> and <LecturerRoute> check role from context,
+    not from localStorage.
+
+STEP 2 — Remove the destructive 3s full-table poll (fixes QA-02, PERF-03)
+  File: admin-portal/src/lib/storage.ts
+  - Delete `startServerSync`, `syncFromSupabase`, and any setInterval.
+  - Delete `setRawItem`, `getRawItem`, and localStorage-based persistence
+    for courses, sessions, roster, users, device_bindings, attendance.
+  - Replace with typed service functions that read from Supabase directly
+    per page/component. Add a lightweight Realtime subscription only where
+    the UI must update without a manual refresh (e.g. live session attendance
+    count). Do not subscribe to attendance_records globally.
+  - localStorage may be used ONLY for UI preferences (sidebar state, theme,
+    last-selected course), never for business data.
+
+STEP 3 — Wire all lecturer mutations to Supabase (fixes QA-02, QA-17, QA-18)
+  File: admin-portal/src/services/lecturerService.ts
+  - createCourse -> supabase.from('courses').insert(...)
+  - archiveCourse -> supabase.from('courses').update({ status: 'archived' })
+      AND close all active lecture_sessions for that course
+      AND trigger any dependent RPCs
+  - createLectureSession -> supabase.from('lecture_sessions').insert(...)
+      Compute status from starts_at: 'scheduled' if future, else 'active'.
+      Enforce duration <= settings.max_session_duration_minutes by REJECTING,
+      not clamping.
+  - closeLectureSession -> update status = 'closed'
+  - revokeLectureSession -> update status = 'revoked'  (NEW action, add UI)
+  - importCourseRoster -> call a new Edge Function /api/import-roster that
+      validates every row against students_master in bulk. Reject unknown.
+      Return { accepted: [...], rejected: [...] } with reasons.
+  - resetDeviceBinding -> /api/reset-device-binding with JWT, never body.actor_id
+  - deleteUser (soft) -> update users.status = 'soft_deleted'
+      AND archive their courses (or reassign, per UI prompt)
+      AND close active sessions of archived courses
+      AND preserve all attendance_records
+  - deleteCourse (soft) -> archive course, close sessions, DO NOT delete
+      attendance_records
+  - Every service function returns { success, data, error } and never throws
+    on a controlled server error.
+
+STEP 4 — Course ownership checks on every lecturer route (fixes SEC-17)
+  Files: admin-portal/src/pages/lecturer/**
+  - Every lecturer page that loads a course/session first fetches the row and
+    checks course.lecturer_id === user.id (or session.lecturer_id === user.id).
+  - On mismatch: toast "You do not have access to this course" and redirect
+    to /lecturer/dashboard.
+  - Do not rely solely on RLS; the client guard gives a clean UX and prevents
+    accidental data flashes.
+
+STEP 5 — Excel export correctness (fixes PERF-09, PERF-10, QA-16)
+  File: admin-portal/src/services/exportService.ts (new) or lecturerService
+  - Sheet 1 Attendance Summary columns:
+      Matric No | Surname | First Name | Other Name | Program | Level
+      | Course Code | Course Title | Total Sessions | Present Count
+      | Late Count | Attended Total | Attendance % | Status
+  - Attendance %:
+      if totalSessionsHeld === 0 -> 0 (not 100, not N/A)
+      else Math.round((presentCount + lateCount) / totalSessionsHeld * 100)
+  - Sheet 2 Session Detail columns:
+      Matric No | Student Name | Course Code | Session Title | Session Date (WAT)
+      | Sign-in Time (WAT) | Status | Latitude | Longitude | Accuracy
+      | Selfie Signed URL (short-lived) | Verification Status | Receipt ID
+  - Join students_master before export. Never leave matric/name undefined.
+  - Use a per-record fetch of signed selfie URL with 5-minute expiry; if the
+    signed URL request fails, put the storage path in the cell and note
+    "selfie unavailable" in Verification Status.
+  - Sanitize course.code for filename (replace / and \ with -).
+
+STEP 6 — Africa/Lagos timezone everywhere (fixes QA-20)
+  Files: StudentAttendanceCalendarPage.tsx, CourseSessionsTab.tsx, all
+         date-using components
+  - Create a shared util: formatWAT(date, options) -> Intl.DateTimeFormat
+    with timeZone: 'Africa/Lagos'.
+  - Bucket calendar cells by WAT date, not browser local.
+  - Parse `<input type="datetime-local">` values as WAT by appending +01:00
+    before constructing a Date.
+  - Render all times with "WAT" suffix.
+
+STEP 7 — Analytics correctness (fixes QA-19)
+  File: admin-portal/src/pages/admin/AnalyticsPage.tsx
+  - "Attendance % Distribution":
+      - Filter students to those enrolled in filteredCourses
+      - Denominator = number of held sessions in filteredCourses (per student's
+        enrolled courses, not global)
+  - All charts respect the selected course, lecturer, and date range filters.
+  - Empty states: if no data, show "No sessions held" not 100%.
+
+STEP 8 — Reference code UI unification (fixes SEC-20, QA-13, PERF-13)
+  Files: AuditPage.tsx, DeviceBindingsPage.tsx, and any place a reference
+         code appears
+  - Import the shared REFERENCE_CODE_MAP (BIND-200..BIND-206)
+  - Filtering uses startsWith() so BIND-201-A4F2 matches BIND-201.
+  - Display both the prefix label and the full code:
+      "BIND-201 — New device detected [BIND-201-A4F2]"
+  - Add an event_type dropdown filter (bind, match, mismatch, cookie_missing,
+    cookie_mismatch, incognito, admin_reset, proxy_detected).
+
+STEP 9 — Session lifecycle in UI (fixes QA-17)
+  Files: CourseSessionsTab.tsx, ClassroomProjectorView.tsx
+  - Badge rendering:
+      starts_at > now -> 'Scheduled' (blue)
+      now between starts_at and expires_at -> 'Active Live' (green pulsing)
+      now > expires_at -> 'Expired' (grey)
+      status = 'closed' -> 'Closed' (dark)
+      status = 'revoked' -> 'Revoked' (red)
+  - Actions per state:
+      Scheduled -> "Start now" (adjusts starts_at to now) + "Cancel"
+      Active -> "End" (close) + "Revoke"
+      Expired / Closed / Revoked -> read-only
+  - ClassroomProjectorView regenerates the QR only when the raw token changes,
+    never on a poll. Stop the 2.5s full re-render. Poll attendance count at
+    5s or use Realtime.
+
+STEP 10 — Device bindings admin page (fixes SEC-15 client side, SEC-20)
+  File: DeviceBindingsPage.tsx
+  - Search by matric -> list active and reset bindings.
+  - Each binding shows: student name, matric, fingerprint short hash,
+    user_agent summary, first_bound_at, last_seen_at, status, last 20 events.
+  - "Reset binding" opens a modal requiring a free-text reason (min 10 chars)
+    and calls /api/reset-device-binding with the admin's JWT.
+  - Shared-device toggle visible only to admin role.
+  - Rate-limit awareness: if server returns 429, show wait time.
+
+STEP 11 — Soft-delete with reassignment prompt (fixes QA-18)
+  File: LecturersPage.tsx / CoursesPage.tsx
+  - Delete lecturer flow:
+      Step 1: confirm
+      Step 2: if the lecturer has active courses, show a modal:
+              "This lecturer owns N active courses. Choose:"
+              [ Reassign to another lecturer ]  [ Archive all ]
+      Step 3: perform the action in a single transaction where possible,
+              else with clear rollback on failure.
+  - Delete course flow:
+      Confirm, then archive (never hard delete). Sessions of archived courses
+      are closed. Attendance records remain.
+
+STEP 12 — Roster import reject-unknown (fixes QA-12, PERF-16)
+  File: rosterService.ts (client-side call to /api/import-roster)
+  - Bulk upload -> single Edge Function call
+  - Server rejects unknown matric with row numbers and reasons
+  - Client downloads rejected CSV/XLSX
+  - Never auto-insert into students_master
+
+STEP 13 — Password change persistence (already covered in Step 1) and
+          login redirect (fixes QA-21, QA-22)
+  - LoginPage redirect logic per role
+  - createLectureSession rejects (not clamps) duration > max
+
+STEP 14 — CSP for admin portal (fixes PERF-19)
+  File: admin-portal/index.html
+  - Add CSP meta:
+      default-src 'self'; script-src 'self' 'unsafe-inline';
+      style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;
+      connect-src 'self' https://*.supabase.co wss://*.supabase.co
+
+STEP 15 — Generic error messages client-side (fixes PERF-19 client portion)
+  - Never display raw Supabase error.message to the user
+  - Show a reference code and "Contact admin if this persists"
+
+VERIFICATION — must run before reporting done
+1. Login as admin/admin -> forced password change -> change succeeds ->
+   logout -> login with new password works.
+2. Create lecturer via admin -> lecturer can log in with their set password.
+3. Create course -> appears in list -> persists across page refresh.
+4. Create session with future starts_at -> badge shows 'Scheduled' ->
+   at start time (mock clock) -> 'Active Live'.
+5. Create session with duration > max -> rejected with clear error.
+6. Upload roster with an unknown matric -> rejected row listed -> never
+   appears in students_master.
+7. 10th active course for a lecturer -> blocked with "Archive a course first".
+8. Soft-delete lecturer -> choose "Archive all" -> their courses archived,
+   sessions closed, attendance preserved. Choose "Reassign" -> courses
+   reassigned, sessions preserved, but lecturer_id changed.
+9. Excel export of a course with 0 sessions -> 0% (not 100%) -> no div by zero.
+10. Excel export of a course with sessions -> matric and name populated ->
+    signed selfie URLs present.
+11. Calendar view of a student -> dates bucketed by WAT even in a UTC browser.
+12. Reference code filter "BIND-201" matches BIND-201-A4F2.
+13. Attempt to access another lecturer's course URL directly -> redirected.
+14. RLS check: with lecturer JWT, SELECT attendance_records for another
+    lecturer's course returns 0 rows (from Supabase client directly).
+15. Admin analytics with a specific course filter shows correct denominator.
+16. Logout from any page returns to /login and clears auth state.
+
+OUTPUT FORMAT
+Return:
+1. FILES CREATED / MODIFIED
+2. CONTRACT CHANGES to Edge Functions the portal now expects
+3. BUGS FIXED (map to SEC/QA/PERF IDs)
+4. TESTS RUN + RESULTS
+5. REMAINING GAPS
+6. HANDOFF NOTES for Agent 4 (build-time CSP, deployment of reverse proxy,
+   required env vars, any new Edge Functions deployed)
+
+RULES
+- No localStorage business data.
+- No polling loops faster than 30s.
+- No client-side auth.
+- No client-side attendance mutation.
+- Never silently clamp a value that should be rejected.

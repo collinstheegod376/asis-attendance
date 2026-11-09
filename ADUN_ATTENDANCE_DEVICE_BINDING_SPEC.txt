@@ -1,0 +1,593 @@
+ADUN ATTENDANCE — OPTION 2: STRICT DEVICE BINDING (FULL SPEC)
+File name: ADUN_ATTENDANCE_DEVICE_BINDING_SPEC.txt
+Companion to: ADUN_ATTENDANCE_APP_LOGIC.txt
+Replaces: Section 7 (LocalStorage Matric Binding Logic) with a full server-side device binding specification
+Purpose: Stop proxy attendance (friends signing for friends), solve the Incognito problem without relying on detectIncognito.js.
+Recovery: NO OTP. Students must contact the admin to reset a device binding.
+
+==================================================
+0. SUMMARY
+==================================================
+
+This is the replacement for the soft localStorage matric lock.
+It is the single strongest anti-proxy control in the whole system.
+
+Core idea:
+- Stop trusting the browser to police itself.
+- Move the decision to the server.
+- The server decides whether this phone is allowed to sign for this student.
+- Incognito mode cannot fake that decision because the server holds the rule, not the browser.
+
+Recovery model:
+- There is NO self-service OTP.
+- If a student's device is not bound, or the binding fails, the student is
+  blocked and told to contact the admin (or lecturer) to reset the device.
+- Admin resets the binding from the admin settings page.
+- This is intentional: it removes the email/SMTP dependency, removes the OTP
+  abuse surface, and keeps the recovery path under human control.
+
+This spec must be read together with ADUN_ATTENDANCE_APP_LOGIC.txt.
+Where this file and the main logic file conflict, this file wins for section 7
+and for the anti-proxy gates.
+
+==================================================
+1. WHAT "DEVICE BINDING" ACTUALLY MEANS
+==================================================
+
+Device binding is THREE components working together, not one.
+
+Component A — Device fingerprint
+- Stored: server (hashed only)
+- Survives Incognito: YES
+  (canvas, WebGL, fonts, screen size, timezone, user agent are identical in a private window)
+- Purpose: identifies the physical device even when browser storage is wiped
+
+Component B — First-party trusted-device cookie
+- Stored: browser cookie, HttpOnly, Secure, SameSite=Lax, 1 year
+- Survives Incognito: NO
+  (every private window starts with no cookies; this is guaranteed by browser design)
+- Purpose: proves this is the same browser session history, not a fresh private window
+
+Component C — localStorage device_id
+- Stored: browser localStorage
+- Survives Incognito: NO
+- Purpose: fast client-side hint only; not authoritative
+
+The fingerprint (A) is the anchor.
+The cookie (B) and localStorage (C) are continuity proofs.
+The server combines all three.
+
+Decision table:
+- A matches + B present + C present -> same device, same browser -> allow
+- A matches + B absent + C absent   -> same physical phone but storage wiped or Incognito active
+                                       this is the Incognito detector
+- A does not match                  -> different physical device -> block, contact admin
+
+==================================================
+2. WHY THIS BEATS detectIncognito.js
+==================================================
+
+detectIncognito.js guesses whether the browser LOOKS private.
+It breaks on browser updates, gives false positives in Chrome Guest mode,
+and Brave/uBlock can block the script from loading from a CDN.
+
+Your own first-party cookie:
+- cannot be blocked
+- cannot be spoofed by the page
+- is guaranteed absent in every private window by browser design
+
+That is the one Incognito signal browser vendors will never remove.
+
+Rule:
+If this phone is already a known, bound device for this student,
+but the trusted-device cookie is missing,
+treat it as Incognito or cleared data.
+
+Keep detectIncognito.js as a cheap first-pass deterrent on the landing page,
+but the cookie check is the enforcement layer.
+
+==================================================
+3. FINGERPRINT LIBRARY CHOICE
+==================================================
+
+Recommended libraries:
+- ThumbmarkJS
+  License: MIT
+  Notes: fully open source, no server call, good default choice
+- FingerprintJS open source v4
+  License: BSL 1.1, converts to MIT after 2 years
+  Notes: very mature; verify license before commercial deploy
+- FingerprintJS Pro
+  Commercial; not needed for this project
+
+Rules:
+- Self-host the script on your own domain.
+- Do NOT load from a public CDN; ad blockers will strip it.
+- Treat script load failure as "unknown fingerprint" and block with
+  "contact admin", never silently allow.
+
+iOS limitation:
+- Safari deliberately reduces fingerprint entropy.
+- Two different iPhones of the same model and iOS version can produce identical fingerprints.
+- Therefore require cookie + localStorage match for iOS user agents.
+- Never authorise on fingerprint alone on iOS.
+
+==================================================
+4. BINDING LIFECYCLE (STATE MACHINE)
+==================================================
+
+FIRST EVER SIGN-IN BY THIS STUDENT
+----------------------------------
+1. Fingerprint F computed on client.
+2. Send hash(F) to server.
+3. Server checks: is F already bound to a DIFFERENT student?
+
+   If YES:
+     BLOCK with: "This device is registered to another student.
+                  Contact the admin if this is an error."
+     Log as suspected_proxy.
+     Do not reveal whose device it is.
+
+   If NO:
+     Create device_binding(student_id, hash(F), status=active)
+     Issue trusted-device cookie (signed HMAC token, 1 year)
+     Set localStorage device_id
+     Proceed with attendance
+
+SUBSEQUENT SIGN-IN
+------------------
+Server receives hash(F), cookie token (or null), localStorage device_id (or null).
+
+Case 1:
+  hash(F) matches binding
+  AND cookie valid
+  AND device_id matches
+  -> ALLOW
+     Update last_seen_at silently.
+
+Case 2:
+  hash(F) matches binding
+  AND cookie MISSING
+  AND device_id MISSING
+  -> Incognito / cleared-data branch:
+     If detectIncognito.js said private:
+       Hard block page:
+       "Attendance is not allowed in Incognito. Open your normal browser."
+     Else:
+       Block page:
+       "This device is not fully recognised. Contact the admin to reset
+        your device, then try again."
+
+Case 3:
+  hash(F) matches binding
+  AND cookie valid
+  AND device_id missing
+  -> Suspicious but recoverable.
+     Block page:
+     "This device is not fully recognised. Contact the admin to reset
+      your device, then try again."
+
+Case 4:
+  hash(F) does NOT match any binding for this student
+  -> Block page:
+     "New device detected. Contact the admin to reset your device,
+      then try again."
+     Log as device_mismatch.
+
+Case 5:
+  hash(F) bound to a DIFFERENT student, regardless of cookie
+  -> BLOCK: "This device is registered to another student.
+             Contact the admin if this is an error."
+     Log suspected_proxy.
+     Admin can review.
+
+Every block case except Case 1 must show:
+- a clear reason
+- a short reference code (e.g. BIND-204) so the admin can find the event
+- instruction to contact the admin or lecturer
+- no self-service recovery button
+
+==================================================
+5. SERVER-SIDE UNIQUENESS RULE (THE KILLER FEATURE)
+==================================================
+
+Enforce as a partial unique index in Postgres:
+
+CREATE UNIQUE INDEX one_active_binding_per_fingerprint
+ON device_bindings (fingerprint_hash)
+WHERE status = 'active';
+
+This guarantees at the DATABASE level that one physical phone can only ever
+be actively bound to one student.
+
+A friend cannot lend their phone for a second sign-in because the second
+binding insert will fail. No application logic can be tricked into bypassing
+this because the constraint lives in the database, not in code.
+
+==================================================
+6. ADMIN-CONTACT RECOVERY FLOW (NO OTP)
+==================================================
+
+There is no self-service OTP.
+Email is not the recovery root of trust.
+The admin is the recovery root of trust.
+
+Student side:
+1. Student hits any block case in section 4.
+2. Page shows:
+   - reason
+   - reference code
+   - "Contact the admin or your lecturer to reset your device."
+   - no button that lets the student proceed
+3. Student contacts admin in person, by phone, or by whatever channel the
+   institution already uses.
+4. Admin verifies the student's identity offline (student ID card, class
+   register, lecturer confirmation).
+5. Admin resets the binding from the admin settings page.
+6. Student reloads the attendance link and signs normally.
+
+Admin side:
+- Admin opens Settings > Device Bindings.
+- Admin searches by matric number.
+- Admin sees the active binding:
+  fingerprint_hash (short display), user_agent, first_bound_at, last_seen_at,
+  status, last 20 device_events for that student.
+- Admin clicks "Reset binding".
+- Server sets old binding status = reset, reset_by = admin_id,
+  reset_at = now.
+- Server logs device_events with event_type = admin_reset.
+- Next successful sign-in creates a fresh active binding on the student's
+  current device.
+
+Admin reset rules:
+- Reset is allowed only for one student at a time.
+- Reset requires a reason field (free text, stored in device_events.metadata).
+- Reset is rate-limited to prevent accidental mass resets (e.g. max 50 per
+  hour per admin account).
+- Reset does not delete history; it only changes binding status.
+- Every reset is written to audit_logs and device_events.
+
+What admin must NOT be able to do:
+- Cannot edit attendance_records.
+- Cannot delete attendance_records.
+- Cannot change a student's fingerprint_history.
+- Cannot move an active binding from student A to student B in one action.
+  (Must reset A first, then the new device binds to B naturally.)
+
+==================================================
+7. SCHEMA CHANGES
+==================================================
+
+device_bindings
+- id
+- student_id            (FK students_master)
+- fingerprint_hash      (text, sha256(fingerprint + per-install server salt))
+- device_id             (uuid from localStorage, nullable)
+- trusted_cookie_hash   (sha256 of the HMAC token stored in cookie)
+- user_agent
+- first_bound_at
+- last_seen_at
+- status                (active | reset | revoked)
+- reset_by              (nullable, FK users.id)
+- reset_at              (nullable)
+
+Partial unique index:
+CREATE UNIQUE INDEX one_active_binding_per_fingerprint
+ON device_bindings (fingerprint_hash)
+WHERE status = 'active';
+
+device_events (append-only audit for forensic review)
+- id
+- student_id
+- fingerprint_hash
+- event_type            (bind | match | mismatch | cookie_missing |
+                         cookie_mismatch | admin_reset | proxy_detected)
+- reference_code        (short code shown to the student, e.g. BIND-204)
+- metadata              (jsonb, stores admin reset reason, UA, IP, etc.)
+- ip
+- user_agent
+- created_at
+
+attendance_records — new columns
+- fingerprint_hash      (snapshot at sign time)
+- binding_id            (FK device_bindings)
+- proxy_risk            (low | medium | high)
+
+The snapshot matters: if a student later resets their device, you still know
+which fingerprint signed which session.
+
+==================================================
+8. SERVER VALIDATION PSEUDOCODE
+==================================================
+
+Runs on every /lookup-matric AND every /submit.
+
+  F   = hash(body.fingerprint)
+  C   = verify_hmac(request.cookie["adun_trusted_device"])   // null if absent
+  D   = body.localStorageDeviceId                            // null if absent
+  S   = body.studentId
+  now = server_time()
+
+  binding = SELECT * FROM device_bindings
+            WHERE student_id = S AND status = 'active'
+            LIMIT 1
+
+  IF binding IS NULL:
+      other = SELECT * FROM device_bindings
+              WHERE fingerprint_hash = F AND status = 'active'
+      IF other EXISTS:
+          ref = log(device_events, 'bind_conflict', S, F)
+          RETURN 403 {
+            reason: "This device is registered to another student.",
+            reference_code: ref,
+            action: "CONTACT_ADMIN"
+          }
+      CREATE binding(S, F, D, hash(C))
+      RETURN 200 "bound"
+
+  IF binding.fingerprint_hash != F:
+      ref = log(device_events, 'fingerprint_mismatch', S, F)
+      RETURN 409 {
+        reason: "New device detected.",
+        reference_code: ref,
+        action: "CONTACT_ADMIN"
+      }
+
+  IF C IS NULL AND D IS NULL:
+      ref = log(device_events, 'cookie_missing', S, F)
+      IF body.incognitoSignal == true:
+          RETURN 403 {
+            reason: "Incognito mode is not allowed.",
+            reference_code: ref,
+            action: "OPEN_NORMAL_BROWSER"
+          }
+      RETURN 409 {
+        reason: "This device is not fully recognised.",
+        reference_code: ref,
+        action: "CONTACT_ADMIN"
+      }
+
+  IF C IS NOT NULL AND hash(C) != binding.trusted_cookie_hash:
+      ref = log(device_events, 'cookie_mismatch', S, F)
+      RETURN 409 {
+        reason: "This device is not fully recognised.",
+        reference_code: ref,
+        action: "CONTACT_ADMIN"
+      }
+
+  UPDATE binding SET last_seen_at = now
+  RETURN 200 "ok"
+
+IMPORTANT:
+The /submit endpoint calls this check AGAIN immediately before inserting the
+attendance row. Do not trust the identity step to have "already checked".
+Every write re-verifies.
+
+There is no OTP branch.
+Every failure returns action = CONTACT_ADMIN or OPEN_NORMAL_BROWSER.
+The student client renders the block screen and does not let the user proceed.
+
+==================================================
+9. EDGE CASES
+==================================================
+
+Two siblings share one phone
+- Only one can bind.
+- Second sibling is blocked with CONTACT_ADMIN.
+- Admin decides:
+  - reset the binding so the second sibling can bind this session, OR
+  - tell them to use separate devices.
+- If admin chooses to allow a shared device, admin can flag the binding as
+  shared (admin-only flag, raises proxy_risk to medium on every record).
+- Shared-device flag is applied per binding, not per student.
+
+Student gets a new phone
+- Fingerprint mismatch -> CONTACT_ADMIN -> admin resets old binding ->
+  student signs on new phone -> new binding created.
+
+Student clears cookies but keeps localStorage
+- Fingerprint + device_id match, cookie missing -> CONTACT_ADMIN.
+- Admin reset required.
+
+Student uses Incognito with same phone
+- Fingerprint matches, cookie and localStorage absent.
+- If detectIncognito confirms private -> OPEN_NORMAL_BROWSER block.
+- Otherwise -> CONTACT_ADMIN block.
+
+Friend uses their own phone to sign for student
+- Fingerprint already bound to friend -> uniqueness index rejects ->
+  blocked with CONTACT_ADMIN for the student being impersonated.
+- Logged as suspected_proxy.
+- The friend's phone cannot sign for a second student in the same session or
+  any future session without an admin reset.
+
+Friend uses a brand-new phone never used before
+- Binds to the friend's matric first.
+- Then the real student on their own phone tries -> fingerprint differs ->
+  CONTACT_ADMIN.
+- Real student contacts admin, admin verifies identity, resets binding on the
+  real student's phone.
+- The friend's fraudulent first sign-in is caught later by the same-session
+  multi-student check (section 10) and flagged for admin review.
+
+Student loses phone mid-semester
+- Admin reset -> student signs on new phone.
+
+iOS fingerprint collision
+- Cookie + localStorage required for iOS user agents.
+- Fingerprint alone never authorises.
+- If cookie or localStorage missing -> CONTACT_ADMIN.
+
+Fingerprint library blocked by Brave/uBlock
+- Self-host the script.
+- If it still fails to load, treat as "unknown fingerprint" ->
+  CONTACT_ADMIN block, never silent allow.
+
+Admin accidentally resets wrong student
+- Old binding moves to status = reset (kept in history).
+- Student re-signs on their original device -> new active binding created.
+- No attendance records affected.
+
+Admin tries to reset during an active lecture
+- Allowed, but admin UI shows a warning:
+  "Resetting this binding will let the student re-bind on their next sign-in."
+- Reset does not affect in-flight attempts already submitted.
+
+==================================================
+10. SAME-SESSION MULTI-STUDENT CHECK (BELT-AND-BRACES)
+==================================================
+
+Device binding stops repeat proxy use.
+Add one extra server check at submit time to catch the first-use case.
+
+Before INSERT, run:
+
+  SELECT 1 FROM attendance_records
+  WHERE session_id = :session
+    AND fingerprint_hash = :F
+    AND student_id <> :S
+  LIMIT 1;
+
+If a row exists:
+- Block the insert.
+- Set proxy_risk = 'high' on the attempted record in device_events.
+- Log it with reference_code.
+- Show a neutral error to the student:
+  "This device has already been used for another student in this session.
+   Contact the admin."
+- Admin sees the flag in the audit page.
+
+This catches the scenario where a friend's fresh phone signs for two people
+in the same lecture.
+
+==================================================
+11. WHERE THIS PLUGS INTO THE MAIN STUDENT FLOW
+==================================================
+
+Open /join/:token
+  GATE 0  detectIncognito.js + token validity             (deterrent + status)
+
+Matric entry
+  GATE 1  Device binding check (section 8)                (HARD — server)
+  GATE 1b localStorage matric soft lock (original spec)   (soft, client only)
+
+Location
+  GATE 2  Geofence + accuracy                             (HARD — server)
+
+Selfie
+  GATE 3  Liveness challenge                              (HARD — client + server verdict)
+
+Submit
+  GATE 4  Re-run GATE 1 + same-session fingerprint check  (HARD — server)
+  GATE 5  unique(session_id, student_id)                  (HARD — DB)
+
+Confirmation
+
+The localStorage matric binding in the original spec now lives at GATE 1b
+as a convenience layer, not a security layer.
+It stops the casual "type a friend's matric on my own browser" case instantly,
+while GATE 1 does the real work.
+
+Block screens required by this spec:
+/block/contact-admin          generic bind failure
+/block/incognito              Incognito detected
+/block/new-device             fingerprint mismatch
+/block/device-in-use          fingerprint already bound to another student
+/block/shared-device          same-session multi-student detected
+
+Each screen must show:
+- reason
+- reference code
+- instruction: "Contact the admin or your lecturer to reset your device."
+- NO self-service button
+
+==================================================
+12. LIMITATIONS AND PRIVACY (STATE THESE IN THE APP LOGIC DOC)
+==================================================
+
+- Fingerprinting is probabilistic.
+  False positives happen (shared models, privacy browsers).
+  Admin reset is the only recovery path, which keeps it under human control.
+
+- A rooted/jailbroken phone can spoof fingerprints.
+  Binding raises the bar; it does not make proxy impossible.
+
+- Device fingerprinting is personal data under NDPR/GDPR.
+  Admission-time consent covers it per project decision, but:
+  - keep the privacy notice reachable
+  - document retention:
+      bindings: for the semester
+      device_events: one academic year
+      attendance_records.fingerprint_hash: same retention as attendance
+
+- Admin is the recovery root of trust.
+  If admin is unavailable, legitimate students are blocked.
+  Recommendation: define a secondary admin or a lecturer-level reset
+  permission for emergencies, and log it clearly.
+
+- Do not store raw fingerprints.
+  Store sha256(fingerprint + per-install server salt) only.
+  Rotate salt only with a migration plan.
+
+- The trusted-device cookie must be:
+  HttpOnly
+  Secure
+  SameSite=Lax
+  signed HMAC
+  Path=/
+  Max-Age = 31536000 (1 year)
+
+- The fingerprint script must be:
+  self-hosted
+  served with SRI hash
+  versioned
+  fail-closed to CONTACT_ADMIN, never fail-open to allow
+
+- Every block screen must be logged with a reference code so the admin can
+  trace the exact device_event.
+
+==================================================
+13. WHAT TO IMPLEMENT NEXT
+==================================================
+
+Order of build for this spec:
+1. Supabase migration:
+   - create device_bindings
+   - create device_events (with reference_code and metadata)
+   - add partial unique index
+   - add new columns to attendance_records
+2. Edge Function: POST /device-check
+   - implements section 8 pseudocode
+   - returns action: OK | CONTACT_ADMIN | OPEN_NORMAL_BROWSER
+3. Edge Function: POST /attendance-submit
+   - re-runs device check
+   - runs same-session fingerprint check
+   - inserts record atomically
+4. Student PWA changes:
+   - load self-hosted fingerprint script
+   - add GATE 0 incognito detection
+   - add GATE 1 device check call
+   - add the five /block/* screens
+   - no OTP screens, no email input
+5. Admin/lecturer web changes:
+   - Settings > Device Bindings page
+     - search by matric
+     - view binding + last 20 events
+     - reset binding with reason field
+     - shared-device flag toggle
+   - Audit page: filter device_events by event_type and reference_code
+6. Test matrix:
+   - same phone, normal browser, first sign-in
+   - same phone, normal browser, subsequent sign-in
+   - same phone, incognito
+   - same phone, cleared cookies only
+   - same phone, cleared localStorage only
+   - same phone, cleared everything
+   - different phone, blocked, admin reset, signs successfully
+   - friend's phone already bound to friend
+   - friend's fresh phone signing for two students in one session
+   - iOS same-model fingerprint collision
+   - Brave Shields blocking fingerprint script
+   - admin reset with reason field
+   - admin reset during active session
+   - second admin reset of the same student in one day

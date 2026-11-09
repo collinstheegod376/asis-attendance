@@ -1,0 +1,562 @@
+================================================================================
+AGENT 1 — BACKEND FOUNDATION & SECURITY INFRASTRUCTURE
+File name: AGENT_1_BACKEND.txt
+Version: 2.0 (post-clarification — includes C1 incognito precedence and C2 lookup locking)
+Companion to: AGENT_2_STUDENT_PWA.txt, AGENT_3_ADMIN_PORTAL.txt, AGENT_4_INTEGRATION.txt
+================================================================================
+
+ROLE
+--------------------------------------------------------------------------------
+You are a senior backend engineer. You are implementing the remediation blueprint
+for the ADUN Attendance system. You own the Supabase database, all Edge Functions,
+RLS policies, rate limiting, scheduled jobs, and security infrastructure.
+
+INPUTS
+--------------------------------------------------------------------------------
+- ADUN_ATTENDANCE_APP_LOGIC.txt
+- ADUN_ATTENDANCE_DEVICE_BINDING_SPEC.txt
+- The Master Audit Report (all defects SEC-01 to SEC-22, QA-01 to QA-05,
+  PERF-01 to PERF-06, PERF-08, PERF-13, PERF-18, PERF-19)
+- The Part IV remediation blueprint (FILE 1 through FILE 5)
+- Current repository source
+
+SCOPE — YOU OWN THESE FILES ONLY
+--------------------------------------------------------------------------------
+- supabase/migrations/                        (all new and modified migrations)
+- supabase/functions/device-check/
+- supabase/functions/submit-attendance/
+- supabase/functions/reset-device-binding/
+- supabase/functions/lookup-matric/
+- supabase/functions/validate-session-token/
+- supabase/functions/verify-location/
+- supabase/functions/upload-selfie/           (NEW — required by Agent 2)
+- supabase/functions/import-roster/           (NEW — required by Agent 3)
+- supabase/functions/_shared/
+- supabase/config.toml
+- supabase/.env.example
+- Any new Edge Functions required by contracts below
+
+Do not touch student-pwa/ or admin-portal/ source.
+
+================================================================================
+CONSTRAINTS — NON-NEGOTIABLE
+================================================================================
+1. NEVER edit or delete an already-applied migration. Create NEW migrations with
+   timestamps after the last one. Name them descriptively.
+
+2. Every migration must be idempotent (IF NOT EXISTS, IF EXISTS).
+
+3. Every migration must have a DOWN migration or a rollback comment.
+
+4. Every Edge Function must authenticate via userClient.auth.getUser() unless it
+   is an explicitly anonymous student endpoint (device-check, submit-attendance,
+   lookup-matric, validate-session-token, verify-location, upload-selfie). Those
+   anonymous endpoints must NEVER trust body.actor_id or body.role.
+
+5. Service-role key is used only inside Edge Functions. Never exposed to browser,
+   never logged, never committed.
+
+6. All cookies: HttpOnly; Secure; SameSite=Lax; signed HMAC; Path=/;
+   Max-Age=31536000. Set via Set-Cookie header only. NEVER in JSON body.
+
+7. All SQL functions touching attendance_records, device_bindings, device_events,
+   attendance_attempts, audit_logs are SECURITY DEFINER and
+   REVOKE EXECUTE FROM anon, authenticated. Only service_role executes them.
+
+8. No hardcoded secrets. If DEVICE_COOKIE_SECRET or FINGERPRINT_SALT is missing
+   at startup, throw. No fallback values.
+
+9. Unified reference code taxonomy used everywhere:
+     BIND-200 = bound successfully
+     BIND-201 = new device / fingerprint mismatch
+     BIND-202 = device bound to another active student
+     BIND-203 = same-session device collision (proxy detected)
+     BIND-204 = cookie missing / unrecognized device
+     BIND-205 = incognito detected
+     BIND-206 = admin reset performed
+   Suffixes may be appended for forensics: BIND-201-A4F2.
+
+10. Every failure returns:
+      { action: 'OK' | 'CONTACT_ADMIN' | 'OPEN_NORMAL_BROWSER',
+        reason: string,
+        reference_code: string }
+    No stack traces. No PII leaks.
+
+11. Use pg_advisory_xact_lock(hashtextextended(<key>, 0)) — 64-bit hashing, not
+    hashtext(). Prevents lock collisions under load.
+
+12. RLS stays ENABLED on all 11 tables. anon has zero direct table access and
+    zero direct RPC execution. All student traffic flows through Edge Functions
+    using the service role.
+
+13. Every student-facing Edge Function reads the trusted cookie ONLY from
+    req.headers.get('Cookie'). It must set the response cookie via Set-Cookie.
+    It must NEVER return the raw token in the JSON response.
+
+================================================================================
+CLARIFICATIONS (LOCKED IN — MUST BE IMPLEMENTED EXACTLY)
+================================================================================
+
+--------------------------------------------------------------------------------
+C1 — INCOGNITO PRECEDENCE IN rpc_device_check
+--------------------------------------------------------------------------------
+The reliable Incognito signal is "known fingerprint, missing cookie". The client
+p_incognito_signal is only corroborating evidence, not the trigger. The check
+must block BIND-205 when the cookie is missing on a known fingerprint AND the
+client signal confirms private mode. Otherwise BIND-204 CONTACT_ADMIN.
+
+Exact precedence inside rpc_device_check:
+
+  1. PERFORM pg_advisory_xact_lock(hashtextextended(p_fingerprint_hash, 0));
+  2. Lookup active binding for p_student_id.
+  3. IF binding exists AND binding.fingerprint_hash = p_fingerprint_hash:
+       IF cookie valid AND binding.device_id matches p_local_device_id:
+          return BIND-200 OK
+       ELSIF p_incognito_signal = true:
+          return BIND-205 OPEN_NORMAL_BROWSER
+       ELSE:
+          return BIND-204 CONTACT_ADMIN
+  4. IF binding exists AND fingerprint differs:
+       return BIND-201 CONTACT_ADMIN
+  5. IF no binding AND fingerprint already bound to another active student:
+       return BIND-202 CONTACT_ADMIN
+  6. IF p_incognito_signal = true:
+       return BIND-205 OPEN_NORMAL_BROWSER
+  7. ELSE create new binding, set attempt.fingerprint_hash + device_bound = true,
+     issue cookie:
+       return BIND-200 BOUND
+
+Note the two Incognito checks (step 3 and step 6). BOTH must be present.
+
+--------------------------------------------------------------------------------
+C2 — rpc_lookup_matric LOCKING SEMANTICS
+--------------------------------------------------------------------------------
+The attempt's student_id is bound by the FIRST successful lookup. A later lookup
+with a different matric on the same attempt is allowed only BEFORE device-check
+has succeeded (i.e. before the student has clicked "Continue to Location Check").
+After device-check returns OK, student_id is permanently locked.
+
+Exact rule inside rpc_lookup_matric:
+
+  - If attendance_attempts.student_id IS NULL:
+      set student_id = matched student; return OK
+  - If attendance_attempts.student_id = matched student:
+      return OK (idempotent)
+  - If attendance_attempts.student_id IS NOT NULL AND <> matched student:
+      IF attendance_attempts.device_bound = false:
+          replace student_id (user clicked Edit before confirming)
+          return OK
+      ELSE:
+          return STUDENT_LOCKED (409)
+
+Add a device_bound BOOLEAN NOT NULL DEFAULT false column to attendance_attempts.
+rpc_device_check sets it to true when it returns BIND-200 BOUND.
+
+================================================================================
+WORK ITEMS — IMPLEMENT IN THIS ORDER
+================================================================================
+
+--------------------------------------------------------------------------------
+STEP 1 — NEW MIGRATION: RLS + PRIVILEGE LOCKDOWN
+--------------------------------------------------------------------------------
+File: supabase/migrations/<ts>_fix_rls_and_permissions.sql
+
+- ENABLE ROW LEVEL SECURITY on all 11 tables.
+- REVOKE ALL ON ALL TABLES/SEQUENCES/FUNCTIONS IN SCHEMA public
+  FROM anon, authenticated.
+- GRANT EXECUTE on attendance/device RPCs ONLY to service_role.
+- Remove all demo data (lecturer tega, course ADUN CYB 201, 93 demo students).
+- RLS policies:
+
+  users:
+    admin SELECT all;
+    lecturer SELECT self;
+    UPDATE self only for password_change fields.
+
+  students_master:
+    admin+lecturer SELECT (lecturer scoped via course_roster join);
+    no direct INSERT/UPDATE/DELETE from any client.
+
+  courses:
+    admin all;
+    lecturer SELECT/UPDATE own (lecturer_id = auth.uid()).
+
+  course_roster:
+    admin all;
+    lecturer SELECT for own courses.
+
+  lecture_sessions:
+    admin all;
+    lecturer SELECT/INSERT/UPDATE for own courses.
+
+  attendance_records:
+    admin+lecturer SELECT only (scoped to own courses);
+    INSERT only via service_role;
+    no UPDATE/DELETE for anyone.
+
+  attendance_attempts:
+    INSERT/SELECT via service_role only.
+
+  device_bindings:
+    admin+lecturer SELECT (lecturer scoped);
+    INSERT/UPDATE via service_role only.
+
+  device_events:
+    admin+lecturer SELECT;
+    INSERT via service_role only.
+
+  audit_logs:
+    admin SELECT;
+    INSERT via service_role only.
+
+  settings:
+    admin SELECT/UPDATE;
+    others SELECT.
+
+--------------------------------------------------------------------------------
+STEP 2 — NEW MIGRATION: SCHEMA FIXES
+--------------------------------------------------------------------------------
+File: supabase/migrations/<ts>_fix_schema_and_constraints.sql
+
+- ALTER TABLE attendance_attempts ADD COLUMN fingerprint_hash TEXT NULL;
+- ALTER TABLE attendance_attempts ADD COLUMN device_bound BOOLEAN NOT NULL
+  DEFAULT false;
+- ALTER TABLE settings ADD COLUMN campus_center_lat DOUBLE PRECISION NULL;
+- ALTER TABLE settings ADD COLUMN campus_center_lng DOUBLE PRECISION NULL;
+- ALTER TABLE settings ADD COLUMN campus_radius_m DOUBLE PRECISION DEFAULT 500;
+
+- Seed settings row if not exists with SAFE defaults:
+    location_mode = 'evidence_only'   -- NOT enforce until admin configures
+    grace_minutes = 10
+    selfie_retention_days = 180
+    max_active_courses_per_lecturer = 9
+    rate_limit_token_per_minute = 60
+    rate_limit_matric_per_minute = 30
+
+- CREATE UNIQUE INDEX one_active_binding_per_student
+    ON device_bindings (student_id) WHERE status = 'active';
+
+- DO NOT add unique_session_fingerprint (iOS fingerprint collisions would block
+  legitimate students). Instead:
+    CREATE INDEX idx_attendance_session_fingerprint
+      ON attendance_records (session_id, fingerprint_hash)
+      WHERE fingerprint_hash IS NOT NULL;
+  Same-session single-device enforcement is done via advisory locks inside
+  rpc_submit_attendance, NOT via a unique constraint.
+
+- CREATE TRIGGER trg_append_only_device_events
+    BEFORE UPDATE OR DELETE ON device_events
+    FOR EACH ROW EXECUTE FUNCTION fn_prevent_tamper_log();
+
+- CREATE TRIGGER trg_append_only_audit_logs
+    BEFORE UPDATE OR DELETE ON audit_logs
+    FOR EACH ROW EXECUTE FUNCTION fn_prevent_tamper_log();
+
+- Create pg_cron jobs (or document equivalent):
+    daily  : delete storage selfies older than settings.selfie_retention_days
+    daily  : delete device_events older than 365 days
+    hourly : delete attendance_attempts expired > 24h ago
+
+--------------------------------------------------------------------------------
+STEP 3 — NEW MIGRATION: RATE LIMITS TABLE + fn_rate_limit
+--------------------------------------------------------------------------------
+File: supabase/migrations/<ts>_rate_limit_table.sql
+
+- CREATE TABLE rate_limits (
+    key TEXT PRIMARY KEY,
+    count INT NOT NULL,
+    window_start TIMESTAMPTZ NOT NULL
+  );
+
+- CREATE FUNCTION fn_rate_limit(p_key TEXT, p_limit INT, p_window_seconds INT)
+    RETURNS BOOLEAN — atomic increment, reset window when expired, return
+    false when over limit.
+
+- Called from:
+    validate-session-token     : per IP, 60/min
+    lookup-matric              : per IP, 30/min
+    rpc_reset_device_binding   : per admin 50/hr, per lecturer 10/hr
+
+--------------------------------------------------------------------------------
+STEP 4 — REWRITE SQL FUNCTIONS
+--------------------------------------------------------------------------------
+File: supabase/migrations/<ts>_rewrite_rpc_functions.sql
+
+Each function has a header comment listing the defect IDs it fixes.
+
+rpc_device_check (fixes SEC-03, SEC-04, SEC-11, SEC-21, C1, C2):
+  - PERFORM pg_advisory_xact_lock(hashtextextended(p_fingerprint_hash, 0));
+  - Implement the exact precedence from C1.
+  - On BIND-200 BOUND: also
+      UPDATE attendance_attempts
+        SET fingerprint_hash = p_fingerprint_hash, device_bound = true
+        WHERE id = p_attempt_id;
+  - Always return {action, reason, reference_code}.
+
+rpc_lookup_matric (fixes SEC-12, SEC-18, C2):
+  - Rate limit before query.
+  - Return SAME generic error for STUDENT_NOT_FOUND and NOT_ON_ROSTER.
+  - Implement C2 locking rule exactly.
+  - On first successful lookup, set attendance_attempts.student_id.
+
+rpc_submit_attendance (fixes SEC-08, SEC-10, SEC-11, SEC-13, SEC-14,
+QA-01, PERF-01, PERF-06):
+  - PERFORM pg_advisory_xact_lock(hashtextextended(v_fingerprint_hash, 0));
+  - Verify v_attempt.step IN ('selfie', 'video').
+  - Verify v_attempt.latitude IS NOT NULL AND v_attempt.longitude IS NOT NULL.
+  - If settings.location_mode = 'enforce' AND a geofence is configured:
+      re-verify geofence in-transaction (Haversine OR GeoJSON ray-cast).
+  - Validate p_selfie_path matches the canonical pattern
+      attendance/<session_id>/<student_id>/<attempt_id>.jpg
+  - INLINE call to the rpc_device_check logic within this transaction
+    (do NOT depend on the Edge Function having called it).
+  - Fix the v_attempt.fingerprint_hash reference — column now exists.
+  - Enforce same-session single-device:
+      IF EXISTS (SELECT 1 FROM attendance_records
+                 WHERE session_id = v_attempt.session_id
+                   AND fingerprint_hash = v_fingerprint_hash
+                   AND student_id <> v_attempt.student_id)
+      THEN return BIND-203 CONTACT_ADMIN;
+  - On unique(session_id, student_id) violation -> return ALREADY_SIGNED 409
+    with the existing receipt_id (idempotent retry).
+  - Insert attendance_records atomically.
+
+rpc_verify_location (fixes SEC-09):
+  - If campus_boundary_geojson IS NOT NULL -> existing ray-cast.
+  - ELSIF campus_center_lat/lng IS NOT NULL -> Haversine via
+    fn_haversine_distance_m.
+  - ELSIF location_mode = 'enforce' -> RAISE EXCEPTION 'GEOFENCE_NOT_CONFIGURED'.
+  - ELSIF location_mode = 'evidence_only' -> accept with evidence flag.
+  - Return ATTEMPT_EXPIRED if attempt expired.
+
+rpc_reset_device_binding (fixes SEC-15):
+  - Caller JWT is authoritative; never trust body.actor_id.
+  - If role = lecturer: verify target student is enrolled in one of the caller's
+    active courses; else FORBIDDEN.
+  - Rate limit per role (admin 50/hr, lecturer 10/hr).
+  - Log device_events with BIND-206 and metadata {reset_reason, actor_id}.
+
+rpc_validate_session_token (fixes SEC-22):
+  - Rate limit per IP.
+  - Accept X-Attempt-Token header; if the referenced attempt is still valid,
+    reuse it instead of inserting a new row.
+  - Never insert a new attendance_attempts row on every refresh.
+
+--------------------------------------------------------------------------------
+STEP 5 — REWRITE EDGE FUNCTIONS
+--------------------------------------------------------------------------------
+
+device-check/index.ts (fixes SEC-03, SEC-05, SEC-06, C1):
+
+  const localDeviceId = body.local_device_id ?? body.device_id ?? null;
+  const localDeviceIdValid = isValidUuid(localDeviceId) ? localDeviceId : null;
+
+  const fingerprintRaw = body.fingerprint ?? body.fingerprint_hash;
+  if (!fingerprintRaw) return 400;
+  const fingerprintHash = await hashWithSalt(fingerprintRaw, FINGERPRINT_SALT);
+
+  const cookies = parseCookies(req.headers.get('Cookie') ?? '');
+  const trustedCookie = cookies['adun_trusted_device'] ?? null;
+  const cookieHash = trustedCookie ? await hmacHash(trustedCookie) : null;
+
+  const { data: result } = await serviceClient.rpc('rpc_device_check', {
+    p_student_id: body.student_id,
+    p_attempt_id: body.attempt_id,
+    p_fingerprint_hash: fingerprintHash,
+    p_cookie_token_hash: cookieHash,
+    p_local_device_id: localDeviceIdValid,
+    p_incognito_signal: body.incognito_signal === true,
+  });
+
+  const headers = { ...corsHeaders, 'Content-Type': 'application/json' };
+  if (result.action === 'OK' && result.reason === 'BOUND') {
+    const newCookie = await signCookie(body.student_id, fingerprintHash);
+    headers['Set-Cookie'] = serializeCookie('adun_trusted_device', newCookie, {
+      httpOnly: true, secure: true, sameSite: 'Lax',
+      path: '/', maxAge: 31536000,
+    });
+  }
+  return new Response(JSON.stringify({
+    action: result.action,
+    reason: result.reason,
+    reference_code: result.reference_code,
+  }), { status: 200, headers });
+  // NEVER include trusted_device_token in JSON.
+
+
+submit-attendance/index.ts (fixes SEC-10, PERF-07, C1):
+  - REQUIRE fingerprint_hash in body, 400 if missing.
+  - Read cookie ONLY from headers.
+  - Call rpc_submit_attendance which internally re-runs the device check.
+  - Strip selfie_data_url from device_info before sending.
+  - Return 409 ALREADY_SIGNED with existing receipt_id on duplicate.
+
+
+reset-device-binding/index.ts (fixes SEC-15):
+  - Auth exclusively via userClient.auth.getUser(). Reject body.actor_id.
+  - Forward caller.id + caller role to rpc_reset_device_binding.
+
+
+lookup-matric/index.ts (fixes SEC-18):
+  - Rate limit before DB.
+  - Generic error for STUDENT_NOT_FOUND and NOT_ON_ROSTER.
+  - Enforce C2 locking semantics via rpc_lookup_matric.
+
+
+validate-session-token/index.ts (fixes SEC-22):
+  - Rate limit per IP.
+  - Accept X-Attempt-Token; reuse existing attempt if valid.
+
+
+verify-location/index.ts (fixes SEC-07 server, SEC-09):
+  - Server-side Haversine + GeoJSON.
+  - Return ATTEMPT_EXPIRED / GEOFENCE_NOT_CONFIGURED correctly.
+
+
+upload-selfie/index.ts (NEW — contract for Agent 2):
+  - Input: { attempt_token, image_base64 } (or multipart).
+  - Validate attempt token, expiry, step.
+  - Compute canonical path:
+      attendance/<session_id>/<student_id>/<attempt_id>.jpg
+  - Upload to selfies bucket with upsert: false via service role.
+  - Verify object exists.
+  - Return { selfie_path } on success; 4xx/5xx otherwise. Never fabricate.
+
+
+import-roster/index.ts (NEW — contract for Agent 3):
+  - Input: { course_id, mode: 'append'|'replace', rows: [...] }
+  - Bulk SELECT students_master by normalized matric list.
+  - Reject unknown matrics with row numbers and reasons. NEVER insert into
+    students_master.
+  - Bulk INSERT into course_roster for accepted rows.
+  - Return { accepted: [...], rejected: [{row, reason}] }.
+
+--------------------------------------------------------------------------------
+STEP 6 — SECRETS HYGIENE
+--------------------------------------------------------------------------------
+- _shared/cookie.ts: throw if DEVICE_COOKIE_SECRET missing. No fallback.
+- _shared/fingerprint.ts: throw if FINGERPRINT_SALT missing. No fallback.
+- _shared/reference-codes.ts (NEW): export the BIND-200..BIND-206 map.
+- Document required env vars in supabase/.env.example.
+
+--------------------------------------------------------------------------------
+STEP 7 — REFERENCE CODE UNIFICATION
+--------------------------------------------------------------------------------
+- _shared/reference-codes.ts: single source of truth.
+- Every function generating a reference code imports from this module.
+- Document in supabase/README.md.
+
+================================================================================
+EDGE FUNCTION CONTRACTS — YOU MUST HAND OFF THESE EXACT SHAPES
+================================================================================
+
+--------------------------------------------------------------------------------
+CONTRACTS FOR AGENT 2 (STUDENT PWA)
+--------------------------------------------------------------------------------
+
+POST /api/validate-session-token
+  body   : { token }
+  headers: optional X-Attempt-Token
+  -> 200 { attempt_id, attempt_token, session_id, course_id,
+           expires_at, step, student_id|null }
+  -> 4xx { error, reference_code? }
+
+POST /api/lookup-matric
+  body   : { attempt_token, matric_no }
+  -> 200 { student_id, full_name, program, level, matric_no }
+  -> 404 GENERIC { error: 'NOT_ELIGIBLE' }
+  -> 409 { error: 'STUDENT_LOCKED' }
+
+POST /api/device-check
+  body   : { attempt_token, student_id, fingerprint, local_device_id,
+             incognito_signal }
+  -> 200 { action: 'OK'|'CONTACT_ADMIN'|'OPEN_NORMAL_BROWSER',
+           reason, reference_code }
+           + Set-Cookie: adun_trusted_device=...
+
+POST /api/verify-location
+  body   : { attempt_token, latitude, longitude, accuracy_m }
+  -> 200 { success: true, inside_boundary: bool }
+  -> 4xx { success: false, error, message }
+
+POST /api/upload-selfie
+  body   : { attempt_token, image_base64 }
+  -> 200 { selfie_path }
+  -> 4xx { error }
+
+POST /api/submit-attendance
+  body   : { attempt_token, selfie_path, fingerprint_hash, device_info }
+  -> 200 { receipt_id, signed_at, status }
+  -> 409 ALREADY_SIGNED { receipt_id, signed_at, status }
+  -> 4xx { error, reference_code? }
+
+--------------------------------------------------------------------------------
+CONTRACTS FOR AGENT 3 (ADMIN PORTAL)
+--------------------------------------------------------------------------------
+
+POST /api/import-roster           (JWT required, lecturer/admin)
+POST /api/reset-device-binding    (JWT required, admin or owning lecturer)
+
+Both use Supabase Auth JWT via Authorization: Bearer header. Agent 3 will build
+the client against these shapes.
+
+================================================================================
+VERIFICATION — MUST RUN BEFORE REPORTING DONE
+================================================================================
+ 1. Every new migration applies cleanly on a fresh Supabase project in order.
+ 2. Anon key cannot SELECT/INSERT/UPDATE/DELETE any table directly (all 11).
+ 3. Anon key cannot EXECUTE any attendance/device RPC directly.
+ 4. rpc_submit_attendance succeeds end-to-end for a valid attempt.
+ 5. rpc_device_check BIND-205 fires when p_incognito_signal = true AND
+    fingerprint matches an existing binding with missing cookie (C1 case 1).
+ 6. rpc_device_check BIND-205 also fires on first-ever bind when
+    p_incognito_signal = true (C1 case 2).
+ 7. rpc_device_check BIND-204 fires when fingerprint matches, cookie missing,
+    p_incognito_signal = false.
+ 8. rpc_device_check BIND-202 fires when fingerprint is bound to another active
+    student.
+ 9. rpc_lookup_matric allows matric change before device_bound = true (C2).
+10. rpc_lookup_matric returns STUDENT_LOCKED after device_bound = true (C2).
+11. reset-device-binding rejects requests with body.actor_id but no JWT.
+12. reset-device-binding rejects a lecturer resetting a student who is not on
+    their roster.
+13. Cross-origin cookie: with a dev proxy at /api/*, the trusted cookie is sent
+    on the 2nd session from a same-origin fetch.
+14. Rate limit: 61st validate-session-token per IP in 60s returns 429.
+15. Upload-selfie fails closed if object put fails; never returns fake path.
+16. Import-roster rejects unknown matric and never touches students_master.
+17. pg_cron jobs scheduled (or documented with the exact SQL to run manually).
+18. Every Edge Function response shape matches the contracts above.
+
+================================================================================
+OUTPUT FORMAT — RETURN ONLY THESE SECTIONS
+================================================================================
+1. FILES CREATED (full paths)
+2. FILES MODIFIED (full paths)
+3. MIGRATIONS (name + purpose + rollback note)
+4. BUGS FIXED (map each to SEC-xx / QA-xx / PERF-xx ID + C1/C2)
+5. EDGE FUNCTION CONTRACTS (final, as deployed)
+6. TESTS RUN + RESULTS (one row per verification item above)
+7. REMAINING GAPS (any defect not fully closed, with reason)
+8. HANDOFF NOTES for Agent 2, 3, 4:
+   - Every Edge Function endpoint deployed
+   - Every env var required
+   - Every breaking change to client calls
+   - The exact cookies set and scope
+
+================================================================================
+RULES
+================================================================================
+- Do not touch student-pwa/ or admin-portal/ source.
+- Do not propose new features.
+- Do not skip migrations by editing old ones.
+- Every SQL function must have a header comment listing the defects it fixes.
+- Every response shape must match the contracts above exactly — Agents 2 and 3
+  build against them.
+- If a defect cannot be fixed without touching an applied migration, create a
+  new migration that supersedes the old behaviour.
+- If a spec clause is ambiguous, surface it as a question. Do not guess.
+
+================================================================================
+END OF AGENT 1 FILE
+================================================================================

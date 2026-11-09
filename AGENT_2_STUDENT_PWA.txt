@@ -1,0 +1,334 @@
+ROLE
+You are a senior frontend engineer specialising in mobile PWAs, camera APIs,
+geolocation, and progressive enhancement. You are implementing the student-side
+remediation for the ADUN Attendance system.
+
+PRECONDITION
+Agent 1 has completed. The following are now true and you MUST assume them:
+- RLS is enabled; anon cannot read/write tables directly.
+- Student PWA must call Edge Functions ONLY, never Supabase tables or RPCs
+  directly in production. Dev mode may use a Vite proxy that forwards to the
+  Edge Functions under the same origin.
+- The unified reference code taxonomy is BIND-200..BIND-206 with optional
+  hex suffix (e.g. BIND-201-A4F2).
+- Edge Functions now accept `local_device_id` and also fall back to `device_id`.
+- `attendance_attempts` has a `fingerprint_hash` column.
+- Dev proxy (vite.config.ts) must forward `/api/*` to the Supabase project
+  URL so cookies are first-party in both dev and prod.
+
+INPUTS
+- ADUN_ATTENDANCE_APP_LOGIC.txt
+- ADUN_ATTENDANCE_DEVICE_BINDING_SPEC.txt
+- Master Audit Report (defects assigned to student-pwa/)
+- Part IV remediation blueprint FILE 6 through FILE 14
+- Current student-pwa/ source
+
+SCOPE — you own these files only
+- student-pwa/src/**
+- student-pwa/vite.config.ts
+- student-pwa/index.html
+- student-pwa/public/manifest.webmanifest
+- student-pwa/public/sw-* (or vite-plugin-pwa config)
+- student-pwa/src/lib/supabase.ts
+- student-pwa/src/lib/crypto.ts
+- student-pwa/src/lib/deviceFingerprint.ts
+- student-pwa/src/lib/attendanceService.ts
+- student-pwa/src/lib/attemptState.ts (new)
+- student-pwa/src/components/CameraHUD.tsx
+- student-pwa/src/components/Stepper.tsx
+- student-pwa/src/pages/**
+- student-pwa/src/App.tsx
+- student-pwa/src/hooks/**
+
+CONSTRAINTS — non-negotiable
+1. The student PWA never talks to Supabase tables or RPCs directly in
+   production. All student actions go through Edge Functions under `/api/*`.
+   Vite dev proxy provides the same-origin illusion in development.
+2. Never trust the client to authorize itself. The client soft-lock exists as
+   UX convenience only; the server is always authoritative.
+3. Every redirect to a terminal state (`/expired`, `/closed`, `/already-signed`,
+   `/not-enrolled`, `/block/*`) MUST use `navigate(path, { replace: true })` and
+   MUST clear attempt state from sessionStorage.
+4. Every block screen must display the exact reference code returned by the
+   server (including hex suffix), not a hardcoded prefix.
+5. Camera `MediaStream` tracks must be stopped immediately after capture, and
+   again on component unmount, and again on visibilitychange to hidden.
+6. Location verification must be fail-closed. Any error, timeout, or
+   non-success response blocks progression to `/attend/selfie`.
+7. Idempotency key is generated ONCE when the attempt is created (server-side)
+   and reused for every retry of the submit call.
+8. The selfie is uploaded via an Edge Function (`/api/upload-selfie`) that
+   returns the canonical storage path. Client never constructs the path itself.
+9. The video step is instructional only. The submit button is NEVER disabled
+   because of video state. The spec is explicit.
+10. Every `/attend/*` page must guard against out-of-order navigation by
+    checking attempt state from sessionStorage. A direct URL to a later step
+    when an earlier step is incomplete must redirect to the correct step.
+
+WORK ITEMS — implement in this order
+
+STEP 1 — Vite dev proxy for same-origin Edge Functions (fixes PERF-04, PERF-05, G4)
+  File: student-pwa/vite.config.ts
+  - Add server.proxy: '/api' -> `https://<SUPABASE_PROJECT_REF>.supabase.co/functions/v1`
+    with changeOrigin: true, secure: true, and rewrite: path => path.replace(/^\/api/, '')
+  - In production build, the deployment layer (Agent 4) handles this reverse
+    proxy. The client code must always use `/api/<function-name>` paths.
+  - Update all client calls in student-pwa/src/lib/supabase.ts to use
+    `/api/device-check`, `/api/submit-attendance`, etc. — never call
+    `https://<project>.supabase.co/functions/v1/...` directly.
+
+STEP 2 — Identity binding refactor (fixes SEC-12, QA-04, R6, G2)
+  File: student-pwa/src/pages/AttendIdentityPage.tsx
+  - Remove the client-side hard block from `checkDeviceBinding()`.
+  - Flow becomes:
+      1. On matric input change -> debounce 400ms -> call /api/lookup-matric
+      2. Display identity card with "Continue" and "Edit" buttons
+      3. "Edit" -> clears the displayed card, allows retyping, no binding
+      4. "Continue to Location Check" click -> call /api/device-check
+         (this is the FIRST time we attempt a bind)
+      5. Server response:
+           OK -> write localStorage binding (post-confirmation only) and
+                 navigate to /attend/location with replace: false
+           BIND-201 -> navigate(`/block/new-device?ref=${ref}`, { replace: true })
+           BIND-202 -> navigate(`/block/device-in-use?ref=${ref}`, { replace: true })
+           BIND-204 -> navigate(`/block/contact-admin?ref=${ref}`, { replace: true })
+           BIND-205 -> navigate(`/block/incognito?ref=${ref}`, { replace: true })
+  - localStorage binding rule:
+      * Read existing binding on mount. If it matches the typed matric,
+        show a subtle "This device remembers you" hint but STILL require
+        server confirmation via "Continue".
+      * If it differs from the typed matric, DO NOT block. Show a neutral
+        hint "If this is a new student on this device, the admin will need
+        to reset it" and allow the user to proceed to /api/device-check.
+      * Write to localStorage ONLY after the server returns OK.
+      * Never let localStorage alone block a server-authorised bind.
+
+STEP 3 — Fail-closed location gate (fixes SEC-07, QA-08, PERF-12)
+  File: student-pwa/src/pages/AttendLocationPage.tsx
+  - In the verifyLocation call:
+      try {
+        const result = await attendanceApi.verifyLocation({ lat, lng, accuracy, attemptToken });
+        if (!result.success) {
+          if (result.error === 'ATTEMPT_EXPIRED' || result.error === 'SESSION_EXPIRED')
+            return navigate('/expired', { replace: true });
+          if (result.error === 'SESSION_CLOSED')
+            return navigate('/closed', { replace: true });
+          if (result.error === 'LOW_ACCURACY')
+            return setErrorStatus('Location accuracy too low. Move to open sky and retry.');
+          if (result.error === 'OUTSIDE_CAMPUS_BOUNDARY')
+            return setErrorStatus('You are outside the permitted campus area.');
+          if (result.error === 'GEOFENCE_NOT_CONFIGURED')
+            return setErrorStatus('Campus boundary is not configured. Contact your lecturer.');
+          return setErrorStatus(result.message || 'Location could not be verified.');
+        }
+        setVerifiedSuccess(true);
+      } catch (err) {
+        // FAIL CLOSED — never call setVerifiedSuccess(true) here
+        setVerifiedSuccess(false);
+        setErrorStatus('Could not reach the server. Check your connection and retry.');
+      }
+  - Pass raw floating-point accuracy, never Math.round.
+  - Fix the Stepper: `<Stepper currentStep="location" />`.
+  - On mount, verify attempt state exists and identity step completed; else
+    navigate back to /attend/identity with replace: true.
+
+STEP 4 — Real face detection and liveness (fixes SEC-13, G1, PERF-11)
+  File: student-pwa/src/components/CameraHUD.tsx
+  - Integrate MediaPipe Face Mesh via @mediapipe/tasks-vision (open source,
+    no server call, works offline after load).
+  - On each animation frame:
+      * Run face detection on the current video frame
+      * Require exactly ONE face detected
+      * Run liveness challenge:
+          - Randomly pick one: "blink twice", "turn head left", "smile"
+          - Blink detection: Eye Aspect Ratio (EAR) < 0.2 then back above 0.3
+            twice within 3 seconds
+          - Head turn: nose x-position relative to face bbox center > 0.15 to
+            the left or right, held for 2 consecutive frames
+          - Smile: mouth width ratio > baseline + threshold for 3 frames
+      * Show live challenge text overlay ("Please blink twice")
+      * Only snap the frame when the challenge is completed
+  - Fail after 15 seconds with a retry button; do NOT fall back to auto-capture.
+  - On capture:
+      * Clamp canvas to 480x480
+      * Center-crop the video into the square
+      * toDataURL('image/jpeg', 0.80)
+      * STOP all MediaStream tracks: streamRef.current.getTracks().forEach(t => t.stop())
+      * Set streamRef.current = null
+  - On component unmount AND on visibilitychange to hidden, stop tracks again
+    (defensive).
+  - On iOS Safari, do not call getUserMedia on mount; only on an explicit
+    "Enable Camera" button tap.
+
+STEP 5 — Selfie upload via Edge Function, fail-closed (fixes QA-09, PERF-08, SEC-14)
+  File: student-pwa/src/pages/AttendSelfiePage.tsx + attendanceService.ts
+  - After capture, POST the image as base64 or multipart to /api/upload-selfie
+    with attempt token.
+  - The Edge Function returns { selfie_path: 'attendance/<sid>/<stid>/<aid>.jpg' }.
+  - If upload fails (network, 4xx, 5xx):
+      * Show retry button
+      * DO NOT navigate to /attend/video
+      * DO NOT fabricate a selfie_path
+  - On success, store selfie_path on attempt in sessionStorage, then navigate.
+  - On mount, guard: if (!attempt?.location) -> redirect to /attend/location.
+
+STEP 6 — Video step is not a gate (fixes QA-10, G3, PERF-07)
+  File: student-pwa/src/pages/AttendVideoPage.tsx
+  - Render an actual `<video controls playsInline>` element pointing at the
+    instructional video asset. If no asset exists, render an inline SVG
+    animation, not a static Play icon div.
+  - REMOVE the `hasWatched` state and the checkbox. The submit button is
+    always enabled (unless submitting = true).
+  - Submit payload:
+      * Use `attempt.idempotency_key` from sessionStorage (created by the
+        server on attempt creation). Never generate a new key client-side.
+      * Do NOT include `selfie_data_url` in device_info. Only userAgent,
+        screenResolution, fingerprintHash, and timestamp.
+  - On submit response:
+      * 200 OK -> navigate('/attend/confirmation', { replace: true })
+      * 409 ALREADY_SIGNED -> navigate('/already-signed', { replace: true })
+      * 4xx/5xx -> show error banner with retry; keep idempotency_key unchanged
+  - On mount, guards:
+      * if (!attempt?.student) -> /attend/identity
+      * if (!attempt?.location) -> /attend/location
+      * if (!attempt?.selfie_path) -> /attend/selfie
+  - Do NOT use the `.replace: true` on forward navigation from video to
+    confirmation (user may want back); but DO use replace: true on terminal
+    failures.
+
+STEP 7 — Confirmation page guard (fixes QA-07)
+  File: student-pwa/src/pages/AttendConfirmationPage.tsx
+  - On mount:
+      if (!attempt?.receipt_id || !attempt?.student) {
+        navigate('/', { replace: true });
+        return;
+      }
+  - Never render fallback values like "STUDENT RECORD" or "ADUN-CONFIRMED".
+
+STEP 8 — Terminal state redirects use replace (fixes QA-14)
+  Files: every page that navigates to `/expired`, `/closed`, `/already-signed`,
+  `/not-enrolled`, `/invalid`, `/block/*`, `/unsupported`, `/offline`.
+  - Always `navigate(path, { replace: true })`.
+  - Always `clearAttemptState()` before navigating to any terminal state.
+
+STEP 9 — Reference code display uses server value (fixes SEC-20, QA-13, PERF-13)
+  Files: AttendIdentityPage.tsx, AttendVideoPage.tsx, all /block/* pages
+  - Match on `reference_code.startsWith('BIND-201')` etc., NEVER strict equality
+    against the bare prefix.
+  - Pass the full code in the URL: `?ref=${encodeURIComponent(reference_code)}`
+  - Block pages display the full code verbatim.
+
+STEP 10 — Step guards on every /attend/* page (fixes QA-06)
+  Files: AttendLocationPage, AttendSelfiePage, AttendVideoPage, AttendConfirmationPage
+  - Each page reads attempt state from sessionStorage on mount and enforces
+    prerequisites in this order:
+      identity -> location -> selfie -> video -> confirmation
+  - On any missing prerequisite, redirect to the correct earlier step with
+    replace: false (so the user can still see what went wrong), except when
+    the attempt is invalid/expired, in which case replace: true to /expired.
+
+STEP 11 — Fingerprint and device ID hardening (fixes QA-05, PERF-15, SEC-19)
+  File: student-pwa/src/lib/crypto.ts
+  - getOrCreateDeviceId() must ALWAYS return a valid RFC-4122 UUID v4.
+    If crypto.randomUUID is unavailable, generate with the correct v4 template.
+  - normalizeMatric() must strip ALL whitespace:
+      return (matric || '').toUpperCase().trim().replace(/\s+/g, '')
+  - Remove any `dev_*` or `temp_device_*` fallbacks.
+  File: student-pwa/src/lib/deviceFingerprint.ts
+  - getScreenInfo() uses Math.min(width, height) and Math.max(width, height)
+    so portrait/landscape produce the same hash.
+  - Reduce OfflineAudioContext to 5000 samples, not 44100.
+
+STEP 12 — HTTPS guard (fixes PERF-17)
+  File: student-pwa/src/pages/JoinTokenPage.tsx
+  - On mount: if (!window.isSecureContext && window.location.hostname !== 'localhost')
+      -> navigate('/unsupported', { replace: true })
+  - Do not reach the identity step on insecure origins.
+
+STEP 13 — Service Worker and PWA manifest (fixes PERF-14)
+  File: student-pwa/vite.config.ts (vite-plugin-pwa config)
+  - navigateFallback: '/index.html'
+  - navigateFallbackDenylist: [/^\/api/]  (removed /join and /attend)
+  - registerType: 'autoUpdate'
+  - cache the app shell only, never /api/*, never /attend/* data fetches
+  - includeAssets: remove `favicon.ico`; keep only files that exist
+  File: student-pwa/public/manifest.webmanifest
+  - name: "ADUN Attendance"
+  - short_name: "ADUN Attendance"
+  - start_url: "/"
+  - display: "standalone"
+  - icons: separate 192x192 and 512x512 with purpose "any" AND a separate
+    set with purpose "maskable". Never combine "any maskable".
+  - theme_color: match the school brand
+  File: student-pwa/index.html
+  - viewport: width=device-width, initial-scale=1.0 (remove user-scalable=no)
+  - Content-Security-Policy meta tag:
+      default-src 'self';
+      script-src 'self' 'wasm-unsafe-eval';
+      style-src 'self' 'unsafe-inline';
+      img-src 'self' data: blob:;
+      media-src 'self' blob:;
+      connect-src 'self' /api;
+      worker-src 'self';
+  - Note: MediaPipe Face Mesh requires 'wasm-unsafe-eval' and worker-src 'self'.
+    If this is too permissive for your threat model, host MediaPipe's .wasm and
+    .task files locally and add their specific origins to CSP.
+
+STEP 14 — Offline page reachability (fixes PERF-14)
+  File: student-pwa/src/App.tsx or a RouteGuard wrapper
+  - Detect navigator.onLine === false on any /join or /attend route and render
+    /offline. Do NOT rely solely on the SW navigateFallback.
+
+STEP 15 — Session token attempt reuse (fixes SEC-22)
+  File: student-pwa/src/pages/JoinTokenPage.tsx
+  - On mount, if sessionStorage has an active attempt with a valid token,
+    validate it via /api/validate-session-token with X-Attempt-Token header
+    before creating a new one.
+  - If the server confirms the existing attempt is valid, reuse it.
+  - If expired/invalid, create a new one.
+  - Never create a new attempt on every page refresh.
+
+STEP 16 — Rate-limit awareness (fixes SEC-18, client side)
+  - On any 429 response from /api/lookup-matric or /api/validate-session-token,
+    show a "Too many attempts. Please wait 60 seconds." message and disable
+    the retry button for the indicated window.
+
+VERIFICATION — must run before reporting done
+1. On a fresh device, type a matric -> card appears -> Continue -> server bind
+   succeeds -> location -> selfie (liveness challenge visible) -> video ->
+   submit -> confirmation.
+2. On the same device, second session: type matric -> Continue -> server
+   returns BIND-200 -> flows through.
+3. Typing a different matric on the same bound device: no client block;
+   Continue -> server returns BIND-202 -> /block/device-in-use with the
+   exact reference code (including hex suffix).
+4. Incognito: Continue -> server returns BIND-205 -> /block/incognito.
+5. Block the network mid-verify-location -> error banner, no navigation.
+6. Block the network mid-upload-selfie -> retry button, no navigation.
+7. Direct URL to /attend/selfie without location -> redirected to location.
+8. Direct URL to /attend/confirmation without receipt -> redirected to /.
+9. Rotate phone portrait -> landscape -> same device still binds.
+10. Camera indicator light off after capture.
+11. Offline: navigate to /join/abc -> /offline rendered.
+12. Non-HTTPS: /join/abc -> /unsupported.
+13. Manifest is installable, start_url shows landing, not a token page.
+14. Submit double-tap: only one attendance record, second tap returns the
+    same receipt_id.
+15. CSP blocks external scripts; MediaPipe loads from self.
+
+OUTPUT FORMAT
+Return:
+1. FILES CREATED / MODIFIED (full paths)
+2. CONTRACT CHANGES to Edge Functions the client now expects
+   (endpoint names, request body shape, response shape)
+3. BUGS FIXED (map to SEC/QA/PERF IDs)
+4. TESTS RUN + RESULTS
+5. REMAINING GAPS (any student-pwa defect not fully closed)
+6. HANDOFF NOTES for Agent 3 and Agent 4 (shared reference codes, CSP
+   requirements, proxy path contract)
+
+RULES
+- Never call Supabase URLs directly; always /api/*.
+- Never skip step guards.
+- Never swallow errors and navigate forward.
+- Never remove fail-closed behaviour to make tests pass.

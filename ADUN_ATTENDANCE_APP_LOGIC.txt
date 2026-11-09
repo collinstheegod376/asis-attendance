@@ -1,0 +1,767 @@
+ADUN ATTENDANCE — FULL APP LOGIC AND WORKFLOW
+File name: ADUN_ATTENDANCE_APP_LOGIC.txt
+App name: ADUN Attendance
+Type: Installable PWA + separate local admin/lecturer web app
+Backend: Supabase
+Timezone: Africa/Lagos
+Hosting: Student PWA on HTTPS; admin/lecturer web on separate host/subdomain
+
+==================================================
+0. LOCKED DECISIONS
+==================================================
+
+1. Student access is gated by a lecture session link/QR.
+   - A session link is one link per lecture session.
+   - It is reusable by many students until it expires or is closed.
+   - It is not consumed by the first student.
+   - QR codes are NOT rotated during a session.
+   - Token is validated server-side on every step.
+
+2. Course eligibility uses a lecturer-uploaded roster spreadsheet.
+   - Lecturer uploads the list of students allowed to take the course.
+   - System validates the upload against the master student spreadsheet/table.
+   - Only qualified students can sign attendance.
+   - Qualification means:
+     a. Student exists in master student table.
+     b. Student is on the uploaded course roster.
+     c. Student level/program matches course rules if configured.
+     d. Student has not already signed this session.
+
+3. Admin sets default and maximum session duration.
+   - Lecturer chooses actual duration within the admin maximum.
+   - Admin can also create/override sessions if needed.
+
+4. Video step is instructional only.
+   - No video recording of the student.
+   - Student views instruction video, then proceeds to confirmation.
+   - Video completion is recorded in the attempt but is not a security control.
+
+5. Location confirmation is captured as evidence and can enforce a campus geofence.
+   - Admin setting: location_mode = enforce | evidence_only.
+   - If enforce and campus boundary is configured, student must be inside boundary.
+   - Accuracy threshold must be met, default 50 metres.
+   - If location fails, student can retry.
+
+6. Selfie retention is configurable.
+   - Default: 180 days.
+   - Selfie stored in private Supabase Storage.
+   - Lecturer views via short-lived signed URL.
+   - No public selfie bucket.
+
+7. Late signing is allowed until session expiry.
+   - Within grace period after start: present.
+   - After grace period but before expiry: late.
+   - After expiry: blocked by expired page.
+
+8. Up to 9 subjects means 9 active courses per lecturer.
+   - Archived courses do not count.
+   - Admin can archive a course to free a slot.
+
+9. Admin only creates lecturer accounts.
+   - Admin does not create student accounts.
+   - Lecturer has full management of own courses, sessions, roster, QR/link, views, and exports.
+   - Lecturer cannot edit or delete attendance records or selfie evidence.
+   - Admin can view all, soft-delete lecturers, reassign/archive courses, reset device bindings.
+
+10. Deleting a lecturer is a soft delete.
+    - Courses are archived or reassigned.
+    - Attendance history is preserved.
+    - Audit log records the action.
+
+11. Session tokens are stored hashed server-side.
+    - High entropy.
+    - No sequential IDs in QR.
+    - Token page uses Referrer-Policy: no-referrer.
+
+12. No separate consent screen is added because students signed at admission.
+    - Privacy notice remains accessible from the landing/footer.
+    - Selfie retention still applies.
+
+13. Rate limiting is enabled.
+    - Token validation and matric lookup are rate-limited.
+    - Repeated failures are logged.
+
+14. localStorage matric binding is enabled as a soft device lock.
+    - After a successful matric lookup, the matric hash is bound to this browser/device.
+    - A different matric number on the same browser is blocked until reset.
+    - This is not security; it can be bypassed by clearing storage or using another browser.
+    - Admin/lecturer can reset a device binding.
+
+==================================================
+1. ACTORS AND PERMISSIONS
+==================================================
+
+STUDENT
+- No account.
+- Identified by matric number.
+- Access only through valid lecture session link/QR.
+- Can sign attendance once per session.
+- Cannot view other students, courses, analytics, admin, or lecturer pages.
+
+LECTURER
+- Account created only by admin.
+- Can create and manage up to 9 active subjects/courses.
+- Can upload course roster spreadsheet.
+- Can create lecture sessions within admin max duration.
+- Can generate session link/QR.
+- Can close/revoke own session.
+- Can view attendance per student, calendar, time, and selfie evidence.
+- Can export attendance to Excel.
+- Cannot edit/delete attendance records.
+- Cannot create other lecturer accounts.
+- Cannot access admin settings.
+
+ADMIN
+- Separate locally hosted admin/lecturer web.
+- Seed account: username admin, password admin.
+- Must force password change on first login.
+- Can create lecturer accounts.
+- Can view all courses, sessions, attendance, analytics.
+- Can set default/max duration, geofence, retention, location mode.
+- Can soft-delete lecturers, archive/reassign courses.
+- Can reset device bindings.
+- Can view audit logs.
+- Cannot expose service-role key to browser.
+
+==================================================
+2. SEPARATE APPS AND ROUTES
+==================================================
+
+STUDENT PWA HOST
+Public landing:
+/
+- Shows only ADUN logo.
+- Text: “Scan a lecture code to continue.”
+- Optional “Scan QR” button using html5-qrcode or @zxing/browser.
+- No matric input.
+- No course list.
+- No admin/lecturer links.
+- Privacy notice link only.
+
+Token entry:
+/join/:token
+- Server validates token before showing any student UI.
+- Invalid -> /invalid
+- Expired -> /expired
+- Not started -> /not-started
+- Closed/revoked -> /closed
+- Valid -> create/restore attendance attempt, go to /attend/identity
+
+Student flow routes:
+/attend/identity      matric entry and lookup
+/attend/location      geolocation capture
+/attend/selfie        live selfie + liveness
+/attend/video         instructional video
+/attend/confirmation  success receipt
+/already-signed       duplicate attendance
+/not-enrolled         student not qualified
+/unsupported          no camera/geolocation/HTTPS
+/offline              network failure
+
+Error/status routes:
+/expired
+/invalid
+/not-started
+/closed
+/already-signed
+/not-enrolled
+/unsupported
+/offline
+
+ADMIN/LECTURER WEB HOST
+Separate host/subdomain, e.g. admin.yourdomain.com
+Routes:
+/login
+/admin/home
+/admin/analytics
+/admin/settings
+/admin/lecturers
+/admin/courses
+/admin/audit
+/lecturer/dashboard
+/lecturer/courses
+/lecturer/courses/:id
+/lecturer/courses/:id/roster
+/lecturer/courses/:id/sessions
+/lecturer/courses/:id/students
+/lecturer/courses/:id/students/:studentId/calendar
+/lecturer/courses/:id/export
+
+Static PWA limitation:
+- The PWA shell can technically be downloaded.
+- No student data or functions are available without a valid token.
+- All sensitive routes call server-side functions that reject missing/invalid tokens.
+- Admin/lecturer web is not linked from the student landing.
+
+==================================================
+3. DATA MODEL
+==================================================
+
+users
+- id
+- role: admin | lecturer
+- username
+- email
+- auth_id
+- status: active | soft_deleted
+- must_change_password
+- created_at
+- deleted_at
+
+students_master
+- id
+- matric_no unique
+- search_key (last 3 digits, helper only)
+- surname
+- first_name
+- middle_name
+- program
+- level
+- email
+- phone
+- status
+- created_at
+
+courses
+- id
+- code
+- title
+- lecturer_id
+- max_active_slots_check
+- status: active | archived
+- created_at
+
+course_roster
+- id
+- course_id
+- student_id
+- uploaded_by
+- uploaded_at
+- unique(course_id, student_id)
+
+lecture_sessions
+- id
+- course_id
+- title
+- token_hash
+- starts_at
+- expires_at
+- grace_minutes
+- status: scheduled | active | expired | closed | revoked
+- created_by
+- created_at
+- closed_at
+
+attendance_attempts
+- id
+- session_id
+- student_id
+- attempt_token_hash
+- step: identity | location | selfie | video | submitted
+- matric_hash
+- device_id
+- expires_at
+- created_at
+- completed_at
+
+attendance_records
+- id
+- session_id
+- course_id
+- student_id
+- signed_at
+- status: present | late
+- latitude
+- longitude
+- accuracy_m
+- selfie_path
+- verification_status: passed | manual_review
+- device_info
+- receipt_id
+- unique(session_id, student_id)
+
+device_bindings
+- id
+- device_id
+- student_id
+- matric_hash
+- first_bound_at
+- last_seen_at
+- status: active | reset
+- reset_by
+- reset_at
+
+audit_logs
+- id
+- actor_id
+- actor_role
+- action
+- entity
+- entity_id
+- metadata
+- created_at
+
+settings
+- location_mode: enforce | evidence_only
+- campus_boundary_geojson
+- location_accuracy_threshold_m default 50
+- default_session_duration_minutes
+- max_session_duration_minutes
+- selfie_retention_days default 180
+- grace_minutes default 10
+- max_active_courses_per_lecturer default 9
+- rate_limit_token_per_minute
+- rate_limit_matric_per_minute
+
+==================================================
+4. STUDENT SPREADSHEET AND ROSTER
+==================================================
+
+Master student spreadsheet columns:
+matric_no,surname,first_name,middle_name,program,level,email,phone,search_key
+
+Example:
+ADUN/FS/COM/25/01,Doe,John,Ada,Computer Science,400,john@example.com,08000000000,001
+ADUN/FS/COM/25/02,Smith,Jane,,Computer Science,400,jane@example.com,08000000001,002
+
+Rules:
+- matric_no is primary lookup.
+- search_key is last 3 digits helper only.
+- Preserve leading zeros.
+- Normalize matric to uppercase and trim spaces.
+- Matric regex example: ^ADUN/[A-Z]{2}/[A-Z]{3}/[0-9]{2}/[0-9]{2,}$
+- Do not rely on last 3 digits alone because collisions can occur above 999.
+
+Course roster upload columns:
+matric_no
+or
+matric_no,surname,first_name,program,level
+
+Roster upload workflow:
+1. Lecturer opens course.
+2. Lecturer uploads roster spreadsheet.
+3. System parses file.
+4. For each row:
+   a. Normalize matric.
+   b. Look up student in students_master.
+   c. If not found, mark row invalid.
+   d. If found, insert into course_roster.
+5. System shows import summary:
+   - accepted rows
+   - rejected rows with reasons
+6. Lecturer can download rejected rows.
+7. Roster replace mode must be explicit:
+   - append
+   - replace all
+8. Only students on course_roster can sign for that course.
+
+==================================================
+5. SESSION LINK AND QR LOGIC
+==================================================
+
+Creation:
+- Lecturer selects course.
+- Lecturer creates lecture session:
+  title, starts_at, duration within admin max, grace_minutes.
+- System generates high-entropy token.
+- Store only token_hash.
+- QR/link contains:
+  https://student-pwa-host/join/<raw-token>
+- QR is static for that session until expiry.
+- No QR rotation.
+
+Validation on every student step:
+- token exists
+- token_hash matches
+- session status is active or scheduled-but-now-active
+- now >= starts_at
+- now < expires_at
+- session not closed/revoked
+- course not archived
+- attempt not expired
+- student qualified
+- student not already signed
+
+Status pages:
+/expired      token expired by time
+/invalid      unknown/malformed token
+/not-started  session not open yet
+/closed       lecturer closed/revoked session
+/already-signed duplicate attendance
+/not-enrolled not on course roster or master table
+/unsupported  no camera/geolocation/HTTPS
+/offline      network failure
+
+Landing page:
+- Logo only.
+- “Scan a lecture code to continue.”
+- Optional in-app QR scanner.
+- No student data.
+
+Expired page:
+- Logo.
+- “This attendance link has expired.”
+- “Ask your lecturer to display a new code.”
+- Optional “Scan new code”.
+
+==================================================
+6. STUDENT ATTENDANCE WORKFLOW
+==================================================
+
+Step 1 — Open link/QR
+- Student opens /join/:token.
+- Server validates token.
+- If invalid/expired/closed/not-started -> status page.
+- If valid -> server creates or restores attendance_attempt.
+- Attempt expires in 10–15 minutes.
+- Attempt token stored in sessionStorage.
+- URL token not reused for API calls.
+
+Step 2 — Matric identity
+- Student enters matric number.
+- Client normalizes and sends to server.
+- Server rate-limits lookup.
+- Server searches students_master by full matric.
+- If not found -> generic not-enrolled/not-found page.
+- If found, server checks course_roster.
+- If not on roster -> /not-enrolled.
+- If qualified, server returns:
+  full name, program, level, matric number.
+- Student confirms identity.
+- localStorage soft binding:
+  a. If no binding: store hash(matric), device_id, bound_at.
+  b. If binding exists and hash matches: continue.
+  c. If binding exists and hash differs: block with “This device is bound to another matric number. Use the original device or contact admin/lecturer to reset.”
+  d. Binding can be reset by admin/lecturer.
+  e. This is not security; server rules remain authoritative.
+
+Step 3 — Location confirmation
+- Browser Geolocation API requests position.
+- Capture latitude, longitude, accuracy_m.
+- If location_mode = enforce:
+  - accuracy must be <= threshold.
+  - position must be inside campus boundary if configured.
+  - if fail -> retry page.
+- If evidence_only:
+  - capture and continue even if outside, but mark evidence.
+- Store location on attempt.
+
+Step 4 — Live selfie check
+- Request camera permission.
+- Use face-api.js or MediaPipe Face Mesh + TensorFlow.js.
+- Liveness challenge:
+  blink, turn head, or smile.
+- Detect exactly one face.
+- Capture image.
+- Upload to private storage path:
+  attendance/<session_id>/<student_id>/<attempt_id>.jpg
+- Store selfie_path on attempt.
+- If no camera/HTTPS -> /unsupported.
+- No separate consent screen per decision; privacy notice remains.
+
+Step 5 — Instructional video
+- Show instruction video.
+- Student taps “I have watched the instruction”.
+- Mark video_seen on attempt.
+- Video is not a security control.
+
+Step 6 — Submit
+- Client sends attempt token and idempotency key.
+- Server revalidates:
+  token, session status, time, attempt expiry, roster, duplicate.
+- Server inserts attendance_record atomically.
+- Unique(session_id, student_id) prevents duplicates.
+- If duplicate -> /already-signed.
+- If success -> generate receipt_id.
+- Show confirmation screen:
+  ADUN Attendance
+  Attendance recorded
+  Course code/title
+  Student name
+  Matric number
+  Time
+  Status: present/late
+  Receipt ID
+- Do not show selfie back to student unless required.
+
+==================================================
+7. LOCALSTORAGE MATRIC BINDING LOGIC
+==================================================
+
+Purpose:
+- Prevent accidental use of another matric number on the same browser.
+- Not a security boundary.
+
+Implementation:
+- Key: adun_device_binding
+- Value:
+  {
+    device_id,
+    matric_hash,
+    first_bound_at,
+    last_seen_at
+  }
+- device_id is a random UUID stored in localStorage.
+- matric_hash = SHA-256(normalized_matric + app_salt).
+- Do not store raw matric in the binding object.
+- Binding is set after successful matric lookup.
+- On later attempts:
+  - if no binding -> set binding.
+  - if binding matches -> allow.
+  - if binding differs -> block.
+- Reset paths:
+  - admin/lecturer resets device binding.
+  - student clears browser data (cannot be prevented).
+  - incognito/another browser bypasses (cannot be prevented).
+- Server-side optional device_bindings table can mirror this for audit.
+- Never use localStorage binding as the only control.
+
+==================================================
+8. LECTURER WORKFLOW
+==================================================
+
+Login:
+- Lecturer logs in on admin/lecturer host.
+- Admin-created account only.
+- Force password change if required.
+
+Dashboard:
+- Shows up to 9 active courses.
+- Shows recent sessions and attendance counts.
+
+Create course:
+- Course code, title.
+- Cannot exceed 9 active courses.
+- Archived courses do not count.
+
+Manage course:
+- Upload roster spreadsheet.
+- Review import summary.
+- Append or replace roster explicitly.
+- Create lecture session:
+  title, starts_at, duration <= admin max, grace_minutes.
+- Generate static session link/QR.
+- View session status.
+- Close/revoke session if needed.
+
+View attendance:
+- Course student list.
+- Total sessions held.
+- Sessions attended.
+- Attendance percentage.
+- Click student -> calendar.
+- Calendar shows dates attended.
+- Click date -> time, status, selfie signed URL.
+- Lecturer cannot edit/delete attendance records.
+
+Export:
+- Export to Excel using SheetJS/xlsx.
+- Columns:
+  Matric No
+  Surname
+  First Name
+  Other Name
+  Program
+  Level
+  Course Code
+  Course Title
+  Total Sessions
+  Sessions Attended
+  Attendance %
+  Session Date
+  Sign-in Time
+  Status (present/late)
+  Latitude
+  Longitude
+  Accuracy
+  Selfie URL or signed reference
+  Verification Status
+  Receipt ID
+
+==================================================
+9. ADMIN WORKFLOW
+==================================================
+
+Login:
+- Seed admin/admin.
+- Force password change on first login.
+- No plaintext password storage.
+- Service-role key never in browser.
+
+Home:
+- Create lecturer accounts.
+- View/manage courses.
+- View sessions.
+- Assign/reassign lecturers.
+- Archive courses.
+- View system status.
+
+Analytics:
+- Bar charts:
+  attendance by course
+  attendance by level
+  attendance by session
+  present vs late vs absent
+  student attendance percentage distribution
+- Filters by course, lecturer, date range.
+
+Settings:
+- Default and max session duration.
+- Grace minutes.
+- Location mode.
+- Campus boundary.
+- Accuracy threshold.
+- Selfie retention days.
+- Max active courses per lecturer default 9.
+- Rate limits.
+- Soft-delete lecturer accounts.
+- Reset device bindings.
+- View audit logs.
+- Export system data if needed.
+
+Deletion:
+- Soft delete only.
+- Courses archived or reassigned.
+- Attendance history preserved.
+- Audit log entry created.
+
+==================================================
+10. SERVER-SIDE SECURITY AND RULES
+==================================================
+
+- Use Supabase Edge Functions for student endpoints.
+- Do not let anon key select students_master, course_roster, attendance_attempts, attendance_records, or device_bindings.
+- RLS:
+  - students: no direct access.
+  - lecturers: own courses/sessions/rosters/attendance views only.
+  - admin: all via admin role.
+  - attendance_records: insert only via server function; no update/delete for lecturers.
+- Store token_hash, not raw token.
+- Store attempt_token_hash.
+- Use server time, not device time.
+- Use Africa/Lagos timezone.
+- Rate limit:
+  - token validation per IP/device
+  - matric lookup per IP/device
+- Log failures.
+- Selfie storage private; signed URLs expire quickly.
+- Referrer-Policy: no-referrer on token pages.
+- No third-party scripts on token pages.
+- Service worker:
+  - cache app shell only
+  - never cache /join, /attend, API responses, selfie uploads, attendance POSTs
+- Idempotency key on submit.
+- Unique(session_id, student_id).
+- Attempt expires in 10–15 minutes.
+- Revalidate token on every step.
+- Normalize matric consistently.
+- Generic error messages for unknown matric to reduce enumeration.
+
+==================================================
+11. PWA REQUIREMENTS
+==================================================
+
+- App name: ADUN Attendance
+- manifest.json with icons, theme, display standalone.
+- Service worker registered.
+- start_url = /
+- Installable on Android/iOS.
+- HTTPS required for camera, geolocation, service worker.
+- localhost is okay for development only.
+- LAN IP with self-signed cert often fails on phones; use proper HTTPS domain or tunnel.
+- If installed and opened from home screen, start_url shows landing “Scan a lecture code to continue.”
+- QR link opens /join/:token.
+- Offline page for network failure.
+- Attendance submission requires internet.
+- Do not queue offline attendance.
+
+==================================================
+12. EXCEL EXPORT FORMAT
+==================================================
+
+Use SheetJS/xlsx.
+Sheet 1: Attendance Summary
+Columns:
+Matric No, Surname, First Name, Other Name, Program, Level,
+Course Code, Course Title, Total Sessions, Sessions Attended,
+Attendance %, Last Signed Date, Last Signed Time, Last Status
+
+Sheet 2: Session Detail
+Columns:
+Matric No, Student Name, Course Code, Session Title, Session Date,
+Sign-in Time, Status, Latitude, Longitude, Accuracy, Verification Status, Receipt ID
+
+Selfie images:
+- Do not embed images by default.
+- Include signed reference or path.
+- If embedding is required, add optional image column with size limits.
+
+==================================================
+13. END-TO-END STATE MACHINE
+==================================================
+
+TOKEN
+-> validate server-side
+-> invalid? /invalid
+-> expired? /expired
+-> not started? /not-started
+-> closed/revoked? /closed
+-> valid -> create/restore attempt
+-> identity
+-> not found/not enrolled? /not-enrolled
+-> qualified -> localStorage binding check
+-> binding mismatch? blocked page with reset instruction
+-> location
+-> location fail? retry
+-> selfie
+-> no camera/HTTPS? /unsupported
+-> liveness fail? retry
+-> video
+-> submit
+-> server revalidate
+-> duplicate? /already-signed
+-> success -> /attend/confirmation
+-> network fail? /offline with retry
+
+==================================================
+14. EDGE CASES
+==================================================
+
+- Student opens link after expiry -> /expired.
+- Student opens link before start -> /not-started.
+- Lecturer closes session early -> /closed.
+- Token malformed -> /invalid.
+- Student already signed -> /already-signed with time.
+- Student not on master table -> generic not-enrolled/not-found.
+- Student on master table but not course roster -> /not-enrolled.
+- Roster upload contains unknown matric -> rejected row.
+- Roster upload contains duplicate matric -> deduplicate and report.
+- Matric with lowercase/spaces -> normalize.
+- Matric with leading zeros -> preserve.
+- Last 3 digits collide -> full matric lookup used.
+- Student changes matric midway -> attempt bound to student_id; blocked.
+- Double-tap submit -> idempotency key + unique constraint.
+- Location permission denied -> retry/instructions.
+- Camera permission denied -> /unsupported or retry.
+- No HTTPS -> /unsupported.
+- Shared phone with different matric -> localStorage binding blocks until reset.
+- Student clears localStorage -> binding lost; server rules still apply.
+- Lecturer exceeds 9 active courses -> block with archive message.
+- Admin deletes lecturer -> soft delete; courses archived/reassigned; attendance preserved.
+- Selfie retention expires -> image deleted; attendance record remains.
+- Network drops during upload -> retry with same idempotency key.
+- Service worker must not serve stale token pages.
+
+==================================================
+15. BUILD ORDER
+==================================================
+
+1. Create Supabase schema, RLS, settings, seed admin.
+2. Create master student import and course roster upload.
+3. Build student PWA landing + token validation + status pages.
+4. Build student flow: identity, binding, location, selfie, video, confirmation.
+5. Build lecturer dashboard: courses, roster, sessions, QR/link, attendance views, calendar, export.
+6. Build admin dashboard: home, analytics, settings, soft delete, audit logs.
+7. Add PWA manifest, service worker, offline page.
+8. Add rate limiting, idempotency, signed URLs, audit logs.
+9. Test on real phones with HTTPS, camera, geolocation, shared-device reset, expired links, duplicate sign-in.

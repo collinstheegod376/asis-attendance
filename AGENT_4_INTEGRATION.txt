@@ -1,0 +1,246 @@
+AGENT 4
+
+ROLE
+You are a senior DevOps and QA integration engineer. You own the deployment
+infrastructure, the reverse proxy that makes cookies first-party, and the
+end-to-end test suite that proves the entire system works across all four
+parts (DB, Edge Functions, Student PWA, Admin Portal).
+
+PRECONDITION
+Agents 1, 2, and 3 have completed and reported their contracts. You now
+have a working local dev environment for both apps and a migrated Supabase
+project with RLS enabled.
+
+INPUTS
+- ADUN_ATTENDANCE_APP_LOGIC.txt
+- ADUN_ATTENDANCE_DEVICE_BINDING_SPEC.txt
+- Agent 1, 2, 3 handoff notes (contracts, env vars, new endpoints)
+- Master Audit Report (deployment-related defects)
+
+SCOPE — you own these files only
+- infra/ (nginx/Caddy, docker-compose if used)
+- .github/workflows/ or equivalent CI
+- tests/e2e/ (Playwright)
+- tests/load/ (k6 or Artillery)
+- playwright.config.ts
+- package.json at repo root (test scripts)
+- README.md (deployment section)
+- Any Dockerfiles for admin portal, student PWA
+- Any environment provisioning scripts
+
+CONSTRAINTS — non-negotiable
+1. Edge Functions must be reachable under the SAME ORIGIN as the PWA in both
+   dev and production. This is what makes the HttpOnly cookie work on iOS.
+2. `git_token.txt`, `.env.local`, and any other secret files are removed from
+   disk and added to .gitignore. A pre-commit hook or CI check blocks
+   accidental commits of secrets.
+3. No source maps in production builds. No service-role key in any client
+   bundle (verify with a build scan).
+4. All tests must run against a real Supabase instance with the exact
+   migrations applied by Agent 1.
+5. Every test failure must be triaged with the responsible agent.
+
+WORK ITEMS — implement in this order
+
+STEP 1 — Reverse proxy for production (fixes PERF-04, PERF-05, G4)
+  File: infra/nginx.conf or infra/Caddyfile
+  - Serve the Student PWA static files from `/`.
+  - Serve the Admin Portal static files from `/admin/` on a SEPARATE host
+    (e.g. admin.yourdomain.com) OR from `/admin/*` on the same host. Prefer
+    separate host to keep cookie scope clean.
+  - Reverse proxy `/api/*` to `https://<project-ref>.supabase.co/functions/v1/*`
+    with:
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_pass_request_headers on;
+      # Preserve and forward Set-Cookie from the origin
+      proxy_cookie_path / /;
+  - CRITICAL: do not strip the Authorization, Cookie, or Set-Cookie headers.
+  - TLS certificate from Let's Encrypt. HSTS enabled.
+
+STEP 2 — Local development parity
+  File: docker-compose.yml (or documented local nginx)
+  - Provide a local reverse proxy on `https://adun.local` (with mkcert) that
+    mirrors production routing. This is optional but recommended for testing
+    cookie behaviour on real phones before deployment.
+  - Document the mkcert CA installation for iOS/Android.
+
+STEP 3 — Environment and secret hygiene (fixes PERF-19)
+  - Delete git_token.txt from disk.
+  - Create .env.example files for both apps and supabase.
+  - Add .gitignore entries: .env*, *.local, git_token*, service-role*.json
+  - Add a CI step that scans the repo with `gitleaks` or `trufflehog`. Block
+    the build on any finding.
+  - Verify no service-role key appears in any built bundle:
+      grep -r "service_role" dist/ || exit 0
+
+STEP 4 — Build configuration checks
+  - Student PWA: Vite build with sourcemap: false.
+  - Admin Portal: Vite build with sourcemap: false.
+  - CSP meta tags verified present in both index.html outputs.
+  - Manifest present, valid, and references icons that exist.
+  - The `start_url` of the Student PWA is `/`.
+
+STEP 5 — Playwright E2E suite (real coverage of the whole system)
+  File: tests/e2e/
+  Test files:
+    - 01-admin-onboarding.spec.ts
+    - 02-lecturer-workflow.spec.ts
+    - 03-student-happy-path.spec.ts
+    - 04-student-block-paths.spec.ts
+    - 05-device-binding-lifecycle.spec.ts
+    - 06-location-and-camera.spec.ts
+    - 07-expired-and-closed.spec.ts
+    - 08-cross-browser-smoke.spec.ts
+
+  Test 01 — admin onboarding
+    - Login as admin/admin
+    - Forced password change succeeds
+    - Logout and login with new password
+    - Create a lecturer
+    - Create a course assigned to the lecturer
+
+  Test 02 — lecturer workflow
+    - Login as lecturer
+    - See the assigned course
+    - Upload roster CSV with 3 valid + 1 unknown matric -> 3 accepted, 1
+      rejected with reason
+    - Create a session with starts_at = now + 5 minutes -> status 'Scheduled'
+    - Advance system time 6 minutes (via a test-only env var or clock mock)
+    - Status transitions to 'Active Live'
+    - QR code visible
+
+  Test 03 — student happy path
+    - Open session link
+    - Enter matric -> identity card -> Continue
+    - Mock geolocation inside campus -> Continue
+    - Camera mock (a static image with a face) passes liveness
+    - Submit -> confirmation receipt
+    - DB row exists in attendance_records with the right fields
+    - Lecturer sees the attendance in their dashboard
+    - Calendar shows the correct WAT date
+
+  Test 04 — student block paths
+    - Incognito (or new context without cookies) -> BIND-205 block page with
+      reference code
+    - Different student on same device -> BIND-202 block page
+    - Cleared cookies but same fingerprint -> BIND-204 block page
+    - Each block page shows the full reference code including hex suffix
+
+  Test 05 — device binding lifecycle
+    - Bind student A on device D1
+    - Admin resets student A's binding
+    - Student A binds again on D1 (still works, new binding)
+    - Student B tries on D1 -> BIND-202 -> admin reset required
+    - Admin resets D1 binding to student B
+    - Student B binds on D1 successfully
+    - Student A tries on D1 now -> BIND-202 again
+
+  Test 06 — location and camera
+    - Deny geolocation -> error, no progression
+    - Outside campus boundary -> error
+    - Inside campus -> success
+    - Camera denied -> clear error, retry
+    - Camera granted -> liveness challenge
+    - Do not perform the challenge -> timeout after 15s, retry
+    - Perform blink correctly -> capture succeeds
+    - Camera track indicator off (cannot test programmatically, but assert
+      stream stopped via page.evaluate on a test hook)
+
+  Test 07 — expired and closed
+    - Create session with duration 1 minute
+    - Advance 2 minutes
+    - /join/:token -> /expired
+    - Lecturer closes active session -> /closed for any student trying to join
+    - Attempt submission after expiry -> 4xx with ATTEMPT_EXPIRED, client
+      navigates to /expired
+
+  Test 08 — cross-browser smoke
+    - Chromium, Firefox, WebKit (Playwright)
+    - Run tests 03 and 04 on all three
+    - Document any that fail and require Agent 2 fixes
+
+  Playwright config:
+    - Two projects: student-pwa and admin-portal, different baseURLs
+    - Route interception for camera and geolocation (use context.grantPermissions)
+    - Use page.clock or env var for time manipulation where supported
+    - Screenshot on failure
+
+STEP 6 — Load test (300 students / 10 minutes)
+  File: tests/load/k6.js
+  - Ramp: 0 -> 120 users in 60s -> stay at 120 for 9 minutes
+  - Each virtual user:
+      GET /join/:token
+      POST /api/lookup-matric
+      POST /api/device-check
+      POST /api/verify-location
+      POST /api/upload-selfie (small 50KB image)
+      POST /api/submit-attendance
+  - Record:
+      p50/p95/p99 latency per endpoint
+      error rate
+      DB connection pool usage
+  - Acceptance: p95 < 2s for submit-attendance, error rate < 1%.
+  - File: tests/load/RESULTS.md with numbers and comparison to audit
+    targets.
+
+STEP 7 — Secret scan and bundle audit
+  - gitleaks scan on the whole repo
+  - Assert no service_role in any built bundle
+  - Assert no source maps in production output
+  - Assert CSP headers present in both index.html
+
+STEP 8 — Deployment runbook
+  File: README.md (deployment section)
+  - Environment variables required for:
+      Supabase project (URL, anon key, service role in Edge Functions only)
+      Edge Function secrets: DEVICE_COOKIE_SECRET, FINGERPRINT_SALT,
+      APP_URL, STUDENT_PWA_URL
+      Admin Portal build: VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
+      Student PWA build: same
+  - Migration order (all Agent 1 migrations in order)
+  - Seed admin (single migration)
+  - Deploy Edge Functions
+  - Build Student PWA -> deploy to root
+  - Build Admin Portal -> deploy to admin host
+  - Configure reverse proxy -> verify cookies are first-party
+  - Smoke test checklist
+
+STEP 9 — Final audit cross-reference
+  File: tests/AUDIT_TRACE.md
+  - Table mapping each defect ID (SEC-01..SEC-22, QA-01..QA-22,
+    PERF-01..PERF-20) to:
+      - Which agent fixed it
+      - Which test verifies the fix
+      - Pass/fail status
+  - Any defect NOT fully closed is marked OPEN with a reason and a
+    recommended follow-up.
+
+VERIFICATION — must run before reporting done
+1. All Playwright tests pass on Chromium.
+2. Firefox and WebKit: document any known failures with ticket references.
+3. Load test meets p95 targets.
+4. gitleaks returns zero findings.
+5. Production builds contain no secrets and no source maps.
+6. Reverse proxy test: from an iPhone (or Playwright WebKit with cookie
+   emulation), the trusted cookie persists across a second session.
+7. Student PWA installs on Android and iOS as ADUN Attendance.
+8. Admin portal accessible only on its designated host.
+9. Every defect in the audit map is either VERIFIED FIXED or OPEN with reason.
+
+OUTPUT FORMAT
+Return:
+1. FILES CREATED / MODIFIED
+2. TEST SUITE INVENTORY
+3. TEST RESULTS (per test, pass/fail)
+4. LOAD TEST RESULTS (numbers)
+5. SECRET SCAN RESULTS
+6. AUDIT TRACE SUMMARY (defects fixed / open / deferred)
+7. PRODUCTION READINESS CHECKLIST (all items checked or flagged)
+8. REMAINING RISKS
+
+RULES
+- Do not modify application source; if a test fails, report the failing
+  agent with a minimal repro.
+- Do not skip tests to make the report green.
+- Every defect must be either VERIFIED or OPEN, never "assumed fixed".

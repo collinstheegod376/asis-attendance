@@ -38,3 +38,6 @@ Thumbs.db
 # Large media files
 *.mp4
 *.MP4
+
+# Supabase CLI temp files
+supabase/.temp/

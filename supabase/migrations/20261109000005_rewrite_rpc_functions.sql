@@ -39,7 +39,7 @@ CREATE OR REPLACE FUNCTION public.rpc_device_check(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
     v_binding RECORD;
@@ -240,7 +240,7 @@ CREATE OR REPLACE FUNCTION public.rpc_lookup_matric(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
     v_attempt RECORD;
@@ -376,7 +376,7 @@ CREATE OR REPLACE FUNCTION public.rpc_submit_attendance(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
     v_attempt RECORD;
@@ -658,7 +658,7 @@ CREATE OR REPLACE FUNCTION public.rpc_verify_location(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
     v_attempt RECORD;
@@ -740,7 +740,7 @@ CREATE OR REPLACE FUNCTION public.rpc_reset_device_binding(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
     v_actor RECORD;
@@ -834,7 +834,7 @@ CREATE OR REPLACE FUNCTION public.rpc_validate_session_token(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
     v_token_hash TEXT;
