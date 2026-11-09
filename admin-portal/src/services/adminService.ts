@@ -104,6 +104,13 @@ export class AdminService {
         password: initialPassword,
       });
 
+      if (signUpErr && !signUpData?.user) {
+        return {
+          success: false,
+          error: sanitizeErrorMessage(signUpErr, 'Failed to register account with authentication service. Password must be at least 6 characters.'),
+        };
+      }
+
       const authId = signUpData?.user?.id || null;
 
       // 2. Insert into public.users using admin client
