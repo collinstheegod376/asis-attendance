@@ -8,6 +8,7 @@ generate_pdf.py
 .local-sync-db.json
 adun_200L_computer_science_roster.*
 *.xlsx
+scripts/
 
 # Dependencies
 node_modules/
