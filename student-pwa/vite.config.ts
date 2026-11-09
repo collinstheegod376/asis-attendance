@@ -64,6 +64,8 @@ export default defineConfig(({ mode }) => {
           maximumFileSizeToCacheInBytes: 30 * 1024 * 1024,
           navigateFallback: '/index.html',
           navigateFallbackDenylist: [/^\/api/],
+          skipWaiting: true,
+          clientsClaim: true,
           runtimeCaching: [
             {
               urlPattern: ({ url }) => url.pathname.startsWith('/api'),

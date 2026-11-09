@@ -9,9 +9,19 @@ export const LandingPage: React.FC = () => {
   const navigate = useNavigate();
   const [scannerOpen, setScannerOpen] = useState(false);
 
-  // Gate 0: First-pass Incognito deterrent on landing page
+  // Gate 0: First-pass Incognito deterrent & proactive Service Worker update
   useEffect(() => {
     let active = true;
+
+    // Check for PWA updates proactively
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistration().then((reg) => {
+        if (reg) {
+          reg.update().catch(() => {});
+        }
+      });
+    }
+
     async function checkPrivateMode() {
       const isPrivate = await detectIncognito();
       if (active && isPrivate) {

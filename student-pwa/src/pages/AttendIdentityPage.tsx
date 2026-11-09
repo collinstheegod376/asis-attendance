@@ -45,7 +45,7 @@ export const AttendIdentityPage: React.FC = () => {
   const [rateLimitedUntil, setRateLimitedUntil] = useState<number | null>(null);
   const [rateLimitSeconds, setRateLimitSeconds] = useState<number>(0);
 
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const initializedRef = useRef(false);
   const lastLookedUpMatricRef = useRef<string>('');
 
   // Rate-limit countdown
@@ -62,17 +62,21 @@ export const AttendIdentityPage: React.FC = () => {
     return () => clearInterval(interval);
   }, [rateLimitedUntil]);
 
-  // Step Guard & Security Initialization
+  // Step Guard & Security Initialization (Runs once on mount)
   useEffect(() => {
-    if (!attempt || !attempt.attempt_id || !attempt.attempt_token) {
+    const currentAttempt = getAttemptState();
+    if (!currentAttempt || !currentAttempt.attempt_id || !currentAttempt.attempt_token) {
       navigate('/', { replace: true });
       return;
     }
 
-    if (attempt.student) {
-      setFoundStudent(attempt.student);
-      setMatricInput(attempt.student.matric_no);
+    if (currentAttempt.student && !foundStudent) {
+      setFoundStudent(currentAttempt.student);
+      setMatricInput(currentAttempt.student.matric_no);
     }
+
+    if (initializedRef.current) return;
+    initializedRef.current = true;
 
     let active = true;
 
@@ -112,13 +116,21 @@ export const AttendIdentityPage: React.FC = () => {
     return () => {
       active = false;
     };
-  }, [attempt, navigate]);
+  }, [navigate]);
 
-  // Perform matric lookup
+  // Perform matric lookup (Triggered explicitly by Verify button or Enter key)
   const performLookup = useCallback(
-    async (matricToQuery: string) => {
-      const cleanMatric = normalizeMatric(matricToQuery);
-      if (!cleanMatric || cleanMatric.length < 5 || !attempt?.attempt_token) {
+    async (matricToQuery?: string) => {
+      const currentAttempt = getAttemptState();
+      if (!currentAttempt?.attempt_token) {
+        navigate('/', { replace: true });
+        return;
+      }
+
+      const raw = matricToQuery !== undefined ? matricToQuery : matricInput;
+      const cleanMatric = normalizeMatric(raw);
+      if (!cleanMatric || cleanMatric.length < 5) {
+        setErrorBanner('Please enter a valid matriculation number (e.g. ADUN/FS/COM/25/001)');
         return;
       }
 
@@ -130,7 +142,7 @@ export const AttendIdentityPage: React.FC = () => {
       setLoading(true);
 
       try {
-        const response = await attendanceService.lookupMatric(attempt.attempt_token, cleanMatric);
+        const response = await attendanceService.lookupMatric(currentAttempt.attempt_token, cleanMatric);
         lastLookedUpMatricRef.current = cleanMatric;
 
         // Map to student data
@@ -184,28 +196,16 @@ export const AttendIdentityPage: React.FC = () => {
         setLoading(false);
       }
     },
-    [attempt, foundStudent, navigate]
+    [matricInput, foundStudent, navigate]
   );
 
-  // Debounce matric input change - auto-lookup only for complete matriculation numbers
+  // Pure input change: updates value cleanly without premature background network triggers
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = normalizeMatric(e.target.value);
     setMatricInput(val);
     setErrorBanner(null);
     setFoundStudent(null);
     setBindingHint(null);
-
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current);
-    }
-
-    // Only auto-trigger lookup if it matches a complete ADUN matriculation pattern (at least 12 chars ending in digits)
-    const isCompleteMatric = /^ADUN\/[A-Z0-9/]+\/\d+$/i.test(val) && val.length >= 12;
-    if (isCompleteMatric) {
-      debounceTimerRef.current = setTimeout(() => {
-        performLookup(val);
-      }, 600);
-    }
   };
 
   // "Edit" clears the displayed card and allows retyping, NO binding
@@ -218,7 +218,8 @@ export const AttendIdentityPage: React.FC = () => {
 
   // "Continue to Location Check" triggers /api/device-check (FIRST time bind is attempted)
   const handleContinue = async () => {
-    if (!foundStudent || !attempt?.attempt_token || bindingInProgress) return;
+    const currentAttempt = getAttemptState();
+    if (!foundStudent || !currentAttempt?.attempt_token || bindingInProgress) return;
 
     setBindingInProgress(true);
     setErrorBanner(null);
@@ -250,7 +251,7 @@ export const AttendIdentityPage: React.FC = () => {
 
       // Call authoritative backend /api/device-check
       const deviceCheck = await attendanceService.checkDevice({
-        attemptToken: attempt.attempt_token,
+        attemptToken: currentAttempt.attempt_token,
         studentId: foundStudent.id,
         fingerprint: activeFpHash,
         localDeviceId: deviceId,
@@ -395,7 +396,7 @@ export const AttendIdentityPage: React.FC = () => {
                       }
                     }}
                     placeholder="e.g. ADUN/FS/COM/25/001"
-                    disabled={loading || Boolean(rateLimitedUntil)}
+                    readOnly={loading || Boolean(rateLimitedUntil)}
                     autoCapitalize="characters"
                     autoCorrect="off"
                     spellCheck="false"
