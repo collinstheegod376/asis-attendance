@@ -77,28 +77,29 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="w-full max-w-sm bg-white rounded-3xl overflow-hidden shadow-2xl border border-slate-100 flex flex-col">
+    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+      <div className="w-full max-w-sm bg-white rounded-2xl sm:rounded-3xl overflow-hidden shadow-2xl border border-slate-100 flex flex-col min-w-0 my-auto">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-800 flex items-center justify-center">
+        <div className="flex items-center justify-between px-4 sm:px-5 py-3 sm:py-4 border-b border-slate-100">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-800 flex items-center justify-center shrink-0">
               <Camera className="w-4 h-4" />
             </div>
-            <h3 className="font-bold text-slate-900 text-sm">Scan Classroom QR</h3>
+            <h3 className="font-bold text-slate-900 text-sm truncate">Scan Classroom QR</h3>
           </div>
           <button
             onClick={onClose}
             type="button"
-            className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition-colors"
+            aria-label="Close QR scanner"
+            className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-500 flex items-center justify-center transition-colors shrink-0 ml-2"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Viewport */}
-        <div className="p-4 flex flex-col items-center">
-          <div className="relative w-full aspect-square rounded-2xl overflow-hidden bg-black flex items-center justify-center">
+        <div className="p-3 sm:p-4 flex flex-col items-center min-w-0">
+          <div className="relative w-full aspect-square max-w-[260px] sm:max-w-[280px] rounded-2xl overflow-hidden bg-black flex items-center justify-center shadow-inner">
             <div id="adun-qr-scanner-region" className="w-full h-full" />
             {!scannerReady && !scanError && (
               <div className="absolute inset-0 flex items-center justify-center text-white text-xs">
@@ -108,13 +109,13 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
           </div>
 
           {scanError && (
-            <div className="mt-3 p-3 bg-red-50 text-red-700 text-xs rounded-xl flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>{scanError}</span>
+            <div className="mt-3 p-3 bg-red-50 text-red-700 text-xs rounded-xl flex items-start gap-2 w-full">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span className="break-words">{scanError}</span>
             </div>
           )}
 
-          <p className="mt-3 text-xs text-slate-500 text-center">
+          <p className="mt-3 text-xs text-slate-500 text-center leading-relaxed">
             Point camera at the attendance code displayed by your lecturer on the projector.
           </p>
         </div>

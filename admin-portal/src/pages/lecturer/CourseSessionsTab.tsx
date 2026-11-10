@@ -255,7 +255,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
             setCreateModalOpen(true);
           }}
           disabled={course.status === 'archived'}
-          className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs transition shadow-xs cursor-pointer ${
+          className={`w-full sm:w-auto justify-center shrink-0 inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs transition shadow-xs cursor-pointer ${
             course.status === 'archived'
               ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
               : 'bg-blue-700 hover:bg-blue-800 text-white active:scale-95'
@@ -484,7 +484,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
       {/* Create Session Modal */}
       {createModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl border border-slate-100 relative">
+          <div className="bg-white rounded-3xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-5 sm:p-8 shadow-2xl border border-slate-100 relative">
             {!newSessionCreated ? (
               <>
                 <h3 className="text-xl font-bold text-slate-900 tracking-tight mb-1">
@@ -606,11 +606,11 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                           </button>
 
                           {sessionLat !== '' && sessionLng !== '' && (
-                            <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200">
+                            <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 break-all sm:break-normal">
                               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                               <span>
                                 Lat: {sessionLat}, Lng: {sessionLng}
-                                {locationAccuracy !== null ? ` (±${locationAccuracy}m accuracy)` : ''}
+                                {locationAccuracy !== null ? ` (±${locationAccuracy}m)` : ''}
                               </span>
                             </div>
                           )}

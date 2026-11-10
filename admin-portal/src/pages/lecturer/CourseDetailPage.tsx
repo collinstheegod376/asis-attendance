@@ -152,11 +152,11 @@ export const CourseDetailPage: React.FC = () => {
         </div>
 
         {/* Action Buttons */}
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
           <button
             onClick={handleExportExcel}
             disabled={isExporting}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs transition shadow-xs cursor-pointer disabled:opacity-50"
+            className="w-full sm:w-auto justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs transition shadow-xs cursor-pointer disabled:opacity-50"
             title="Download full 2-sheet attendance ledger"
           >
             <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
@@ -165,7 +165,7 @@ export const CourseDetailPage: React.FC = () => {
 
           <button
             onClick={handleArchiveToggle}
-            className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-xs transition shadow-xs cursor-pointer ${
+            className={`w-full sm:w-auto justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-xs transition shadow-xs cursor-pointer ${
               course.status === 'active'
                 ? 'border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-800'
                 : 'border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-800'
@@ -178,40 +178,40 @@ export const CourseDetailPage: React.FC = () => {
       </div>
 
       {/* Tabs Navigation */}
-      <div className="flex border-b border-slate-200 gap-8">
+      <div className="flex border-b border-slate-200 gap-4 sm:gap-8 overflow-x-auto scrollbar-none whitespace-nowrap -mx-4 px-4 sm:mx-0 sm:px-0">
         <button
           onClick={() => handleTabChange('sessions')}
-          className={`pb-3 text-sm font-bold flex items-center gap-2 transition cursor-pointer ${
+          className={`shrink-0 pb-3 text-sm font-bold flex items-center gap-2 transition cursor-pointer ${
             activeTab === 'sessions'
               ? 'text-blue-700 border-b-2 border-blue-700'
               : 'text-slate-500 hover:text-slate-800'
           }`}
         >
-          <Presentation className="w-4 h-4" />
+          <Presentation className="w-4 h-4 shrink-0" />
           <span>Lecture Sessions &amp; QR</span>
         </button>
 
         <button
           onClick={() => handleTabChange('roster')}
-          className={`pb-3 text-sm font-bold flex items-center gap-2 transition cursor-pointer ${
+          className={`shrink-0 pb-3 text-sm font-bold flex items-center gap-2 transition cursor-pointer ${
             activeTab === 'roster'
               ? 'text-blue-700 border-b-2 border-blue-700'
               : 'text-slate-500 hover:text-slate-800'
           }`}
         >
-          <Users className="w-4 h-4" />
+          <Users className="w-4 h-4 shrink-0" />
           <span>Course Roster</span>
         </button>
 
         <button
           onClick={() => handleTabChange('students')}
-          className={`pb-3 text-sm font-bold flex items-center gap-2 transition cursor-pointer ${
+          className={`shrink-0 pb-3 text-sm font-bold flex items-center gap-2 transition cursor-pointer ${
             activeTab === 'students'
               ? 'text-blue-700 border-b-2 border-blue-700'
               : 'text-slate-500 hover:text-slate-800'
           }`}
         >
-          <Calendar className="w-4 h-4" />
+          <Calendar className="w-4 h-4 shrink-0" />
           <span>Student Attendance Ledgers</span>
         </button>
       </div>

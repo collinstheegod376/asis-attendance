@@ -103,18 +103,48 @@ Deno.serve(async (req: Request) => {
     }
 
     // 5. Execute atomic database RPC with verified actor identity
-    const { data: result, error: rpcErr } = await supabase.rpc('rpc_reset_device_binding', {
+    const clientIp = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+                     req.headers.get('cf-connecting-ip') ||
+                     req.headers.get('x-real-ip') ||
+                     null;
+
+    let result: any = null;
+    let rpcErr: any = null;
+
+    // Primary invocation: matches 4-parameter overload (p_student_id, p_actor_id, p_actor_role, p_reason)
+    const call1 = await supabase.rpc('rpc_reset_device_binding', {
       p_student_id: studentId,
       p_actor_id: dbUser.id,
       p_actor_role: dbUser.role,
       p_reason: reason.trim(),
     });
 
+    result = call1.data;
+    rpcErr = call1.error;
+
+    // Graceful fallback to 5-parameter signature if 4-parameter overload fails
+    if (rpcErr && (rpcErr.code === 'PGRST202' || rpcErr.code === 'PGRST203')) {
+      console.warn('Retrying rpc_reset_device_binding with 5-parameter signature (p_role, p_actor_ip)...');
+      const call2 = await supabase.rpc('rpc_reset_device_binding', {
+        p_student_id: studentId,
+        p_actor_id: dbUser.id,
+        p_reason: reason.trim(),
+        p_actor_ip: clientIp,
+        p_role: dbUser.role,
+      });
+      result = call2.data;
+      rpcErr = call2.error;
+    }
+
     if (rpcErr || !result) {
       console.error('RPC Error in rpc_reset_device_binding:', rpcErr);
+      const isParamMismatch = rpcErr?.code === 'PGRST202' || rpcErr?.code === 'PGRST203';
       return new Response(JSON.stringify({
-        error: 'DATABASE_ERROR',
-        message: rpcErr?.message || 'Database error occurred during device reset.',
+        error: isParamMismatch ? 'RPC_SCHEMA_MISMATCH' : 'DATABASE_ERROR',
+        message: isParamMismatch
+          ? 'Database stored procedure signature mismatch. Please ensure migration 20261110000004 is applied.'
+          : (rpcErr?.message || 'Database error occurred during device reset.'),
+        details: rpcErr?.details || null,
       }), {
         status: 500,
         headers: { ...baseHeaders, 'Content-Type': 'application/json' },

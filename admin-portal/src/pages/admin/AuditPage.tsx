@@ -204,14 +204,14 @@ export const AuditPage: React.FC = () => {
         </div>
 
         {/* Filters */}
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:flex lg:flex-wrap items-center gap-2 w-full lg:w-auto">
           {/* Security / Category Filter */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs text-slate-500 font-medium">Category:</span>
+          <div className="flex items-center gap-1.5 w-full sm:w-auto">
+            <span className="text-xs text-slate-500 font-medium shrink-0">Category:</span>
             <select
               value={categoryFilter}
               onChange={e => setCategoryFilter(e.target.value as any)}
-              className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+              className="w-full sm:w-auto px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
             >
               <option value="all">All Categories ({logs.length})</option>
               <option value="device_binding">
@@ -224,12 +224,12 @@ export const AuditPage: React.FC = () => {
           </div>
 
           {/* Reference Code Prefix Filter (BIND-200..BIND-206) */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs text-slate-500 font-medium">Ref Code:</span>
+          <div className="flex items-center gap-1.5 w-full sm:w-auto">
+            <span className="text-xs text-slate-500 font-medium shrink-0">Ref Code:</span>
             <select
               value={refCodeFilter}
               onChange={e => setRefCodeFilter(e.target.value)}
-              className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600 max-w-[210px]"
+              className="w-full sm:w-auto px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
             >
               <option value="all">All Ref Codes</option>
               {Object.entries(REFERENCE_CODE_MAP).map(([code, def]) => (
@@ -241,12 +241,12 @@ export const AuditPage: React.FC = () => {
           </div>
 
           {/* Event Type Filter */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs text-slate-500 font-medium">Event:</span>
+          <div className="flex items-center gap-1.5 w-full sm:w-auto">
+            <span className="text-xs text-slate-500 font-medium shrink-0">Event:</span>
             <select
               value={eventTypeFilter}
               onChange={e => setEventTypeFilter(e.target.value)}
-              className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+              className="w-full sm:w-auto px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
             >
               {EVENT_TYPE_OPTIONS.map(opt => (
                 <option key={opt.value} value={opt.value}>
@@ -257,12 +257,12 @@ export const AuditPage: React.FC = () => {
           </div>
 
           {/* Actor Role Filter */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs text-slate-500 font-medium">Role:</span>
+          <div className="flex items-center gap-1.5 w-full sm:w-auto">
+            <span className="text-xs text-slate-500 font-medium shrink-0">Role:</span>
             <select
               value={filterRole}
               onChange={e => setFilterRole(e.target.value as any)}
-              className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+              className="w-full sm:w-auto px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
             >
               <option value="all">All Roles</option>
               <option value="admin">Admin</option>
@@ -366,7 +366,7 @@ export const AuditPage: React.FC = () => {
       ) : (
         <div className="bg-white rounded-2xl border border-slate-200/80 shadow-2xs overflow-hidden">
           <div className="overflow-x-auto max-h-[680px]">
-            <table className="w-full text-left border-collapse">
+            <table className="w-full min-w-[850px] text-left border-collapse">
               <thead className="sticky top-0 bg-slate-100/95 backdrop-blur-xs z-10 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
                 <tr>
                   <th className="py-3 px-4">Lagos Timestamp (WAT)</th>

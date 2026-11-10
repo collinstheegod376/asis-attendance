@@ -240,7 +240,7 @@ export const LecturersPage: React.FC = () => {
             setFormError('');
             setCreateModalOpen(true);
           }}
-          className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-700 hover:bg-blue-800 active:bg-blue-900 text-white font-semibold text-sm rounded-xl transition shadow-xs self-start sm:self-auto cursor-pointer"
+          className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-700 hover:bg-blue-800 active:bg-blue-900 text-white font-semibold text-sm rounded-xl transition shadow-xs w-full sm:w-auto cursor-pointer"
         >
           <UserPlus className="w-4 h-4" />
           <span>New Faculty Account</span>
@@ -248,7 +248,7 @@ export const LecturersPage: React.FC = () => {
       </div>
 
       {/* Filter and Search Bar */}
-      <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3">
+      <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
         <div className="relative w-full sm:w-96">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
           <input
@@ -260,12 +260,12 @@ export const LecturersPage: React.FC = () => {
           />
         </div>
 
-        <div className="flex items-center gap-2 w-full sm:w-auto self-end">
-          <span className="text-xs text-slate-500 font-medium">Status:</span>
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <span className="text-xs text-slate-500 font-medium shrink-0">Status:</span>
           <select
             value={filterStatus}
             onChange={e => setFilterStatus(e.target.value as any)}
-            className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+            className="w-full sm:w-auto px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
           >
             <option value="all">All Accounts</option>
             <option value="active">Active Only</option>
@@ -294,7 +294,7 @@ export const LecturersPage: React.FC = () => {
       ) : (
         <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+            <table className="w-full min-w-[720px] text-left border-collapse">
               <thead>
                 <tr className="bg-slate-50/75 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
                   <th className="py-3 px-4">Lecturer / Staff</th>
@@ -435,22 +435,22 @@ export const LecturersPage: React.FC = () => {
 
       {/* CREATE LECTURER MODAL */}
       {createModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4">
-          <div className="w-full max-w-lg bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
-            <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto">
+          <div className="w-full max-w-lg bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden max-h-[90vh] flex flex-col">
+            <div className="px-5 sm:px-6 py-4 bg-slate-900 text-white flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2.5">
                 <UserPlus className="w-5 h-5 text-blue-400" />
                 <h3 className="font-bold text-base">Provision Faculty Account</h3>
               </div>
               <button
                 onClick={() => setCreateModalOpen(false)}
-                className="text-slate-400 hover:text-white cursor-pointer"
+                className="text-slate-400 hover:text-white cursor-pointer p-1"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateSubmit} className="p-6 space-y-4">
+            <form onSubmit={handleCreateSubmit} className="p-4 sm:p-6 space-y-4 overflow-y-auto">
               {formError && (
                 <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-red-800 text-xs flex items-center gap-2">
                   <AlertTriangle className="w-4 h-4 shrink-0 text-red-600" />
@@ -554,18 +554,18 @@ export const LecturersPage: React.FC = () => {
                 Account will be created with <span className="font-semibold">must_change_password: true</span>. The lecturer will be prompted to choose a new password upon first sign-in.
               </div>
 
-              <div className="pt-3 flex items-center justify-end gap-3">
+              <div className="pt-3 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2 sm:gap-3">
                 <button
                   type="button"
                   onClick={() => setCreateModalOpen(false)}
-                  className="px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 rounded-xl transition cursor-pointer"
+                  className="px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100 rounded-xl transition cursor-pointer text-center"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="px-5 py-2 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-xl transition shadow-xs disabled:opacity-50 cursor-pointer"
+                  className="px-5 py-2.5 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-xl transition shadow-xs disabled:opacity-50 cursor-pointer text-center"
                 >
                   {isSubmitting ? 'Creating...' : 'Create Account'}
                 </button>
@@ -636,19 +636,19 @@ export const LecturersPage: React.FC = () => {
 
       {/* SOFT DELETE CONFIRMATION & COURSE REASSIGNMENT MODAL (QA-18) */}
       {deleteModalOpen && selectedLecturer && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4">
-          <div className="w-full max-w-lg bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
-            <div className="px-6 py-4 bg-red-950 text-white flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto">
+          <div className="w-full max-w-lg bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden max-h-[90vh] flex flex-col">
+            <div className="px-5 sm:px-6 py-4 bg-red-950 text-white flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
                 <Trash2 className="w-5 h-5 text-red-400" />
                 <h3 className="font-bold text-base">Deactivate Faculty Account</h3>
               </div>
-              <button onClick={() => setDeleteModalOpen(false)} className="text-red-300 hover:text-white cursor-pointer">
+              <button onClick={() => setDeleteModalOpen(false)} className="text-red-300 hover:text-white cursor-pointer p-1">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-6 space-y-4">
+            <div className="p-4 sm:p-6 space-y-4 overflow-y-auto">
               <p className="text-sm text-slate-700">
                 Are you sure you want to soft-delete <span className="font-bold text-slate-900">{selectedLecturer.name}</span>?
               </p>
@@ -745,18 +745,18 @@ export const LecturersPage: React.FC = () => {
                 </p>
               )}
 
-              <div className="pt-3 flex items-center justify-end gap-3">
+              <div className="pt-3 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2 sm:gap-3">
                 <button
                   type="button"
                   onClick={() => setDeleteModalOpen(false)}
-                  className="px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 rounded-xl cursor-pointer"
+                  className="px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 rounded-xl cursor-pointer text-center"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleSoftDelete}
                   disabled={isSubmitting || (activeLecturerCourses.length > 0 && deleteActionCourses === 'reassign' && !targetLecturerId)}
-                  className="px-5 py-2 text-sm font-semibold text-white bg-red-700 hover:bg-red-800 rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
+                  className="px-5 py-2 text-sm font-semibold text-white bg-red-700 hover:bg-red-800 rounded-xl shadow-xs disabled:opacity-50 cursor-pointer text-center"
                 >
                   {isSubmitting ? 'Processing...' : 'Confirm Deactivation'}
                 </button>

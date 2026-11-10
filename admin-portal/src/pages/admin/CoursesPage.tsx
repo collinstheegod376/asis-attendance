@@ -159,7 +159,7 @@ export const CoursesPage: React.FC = () => {
             setCreateModalOpen(true);
           }}
           disabled={lecturers.length === 0}
-          className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-700 hover:bg-blue-800 active:bg-blue-900 disabled:opacity-50 text-white font-semibold text-sm rounded-xl transition shadow-xs self-start sm:self-auto cursor-pointer"
+          className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-700 hover:bg-blue-800 active:bg-blue-900 disabled:opacity-50 text-white font-semibold text-sm rounded-xl transition shadow-xs w-full sm:w-auto cursor-pointer"
         >
           <Plus className="w-4 h-4" />
           <span>Provision Course</span>
@@ -167,7 +167,7 @@ export const CoursesPage: React.FC = () => {
       </div>
 
       {/* Filter and Search Bar */}
-      <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col md:flex-row items-center justify-between gap-3">
+      <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
         <div className="relative w-full md:w-80">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
           <input
@@ -179,12 +179,12 @@ export const CoursesPage: React.FC = () => {
           />
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 w-full md:w-auto">
           {/* Lecturer Filter */}
           <select
             value={filterLecturer}
             onChange={e => setFilterLecturer(e.target.value)}
-            className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+            className="w-full sm:w-auto px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
           >
             <option value="all">All Faculty</option>
             {lecturers.map(l => (
@@ -198,7 +198,7 @@ export const CoursesPage: React.FC = () => {
           <select
             value={filterStatus}
             onChange={e => setFilterStatus(e.target.value as any)}
-            className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+            className="w-full sm:w-auto px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
           >
             <option value="all">All Statuses</option>
             <option value="active">Active Only</option>
@@ -227,7 +227,7 @@ export const CoursesPage: React.FC = () => {
       ) : (
         <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+            <table className="w-full min-w-[700px] text-left border-collapse">
               <thead>
                 <tr className="bg-slate-50/75 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
                   <th className="py-3 px-4">Course Code &amp; Title</th>

@@ -7,11 +7,11 @@ export const PrivacyPage: React.FC = () => {
   const navigate = useNavigate();
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col items-center p-4 sm:p-6">
-      <div className="w-full max-w-md bg-white rounded-3xl p-6 shadow-sm border border-slate-200/80 my-4">
+    <div className="min-h-dvh min-h-[100dvh] bg-slate-50 flex flex-col items-center p-3 sm:p-6 overflow-x-hidden">
+      <div className="w-full max-w-md bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/80 my-2 sm:my-4 min-w-0">
         <button
           onClick={() => navigate(-1)}
-          className="flex items-center gap-1.5 text-xs font-semibold text-blue-800 hover:text-blue-950 mb-4"
+          className="flex items-center gap-1.5 text-xs font-semibold text-blue-800 hover:text-blue-950 mb-3 sm:mb-4 py-1"
         >
           <ArrowLeft className="w-4 h-4" /> Back
         </button>

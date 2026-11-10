@@ -107,16 +107,16 @@ export const CourseStudentsTab: React.FC<CourseStudentsTabProps> = ({ course }) 
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
           {/* Search */}
-          <div className="relative">
+          <div className="relative w-full sm:w-auto">
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               placeholder="Search student or matric..."
-              className="pl-9 pr-3 py-1.5 text-xs rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-600 w-48 sm:w-60"
+              className="pl-9 pr-3 py-1.5 text-xs rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-600 w-full sm:w-60"
             />
           </div>
 
@@ -124,7 +124,7 @@ export const CourseStudentsTab: React.FC<CourseStudentsTabProps> = ({ course }) 
           <select
             value={filterThreshold}
             onChange={e => setFilterThreshold(e.target.value as any)}
-            className="py-1.5 px-3 text-xs rounded-xl border border-slate-200 bg-slate-50 text-slate-700 font-medium focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+            className="w-full sm:w-auto py-1.5 px-3 text-xs rounded-xl border border-slate-200 bg-slate-50 text-slate-700 font-medium focus:outline-hidden focus:ring-2 focus:ring-blue-600"
           >
             <option value="all">All Attendance Rates</option>
             <option value="good">Good Standing (&ge; 75%)</option>
@@ -151,7 +151,7 @@ export const CourseStudentsTab: React.FC<CourseStudentsTabProps> = ({ course }) 
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs sm:text-sm">
+            <table className="w-full min-w-[750px] text-left text-xs sm:text-sm">
               <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase text-[11px] tracking-wider">
                 <tr>
                   <th className="px-5 py-3.5">Matric Number</th>

@@ -155,26 +155,26 @@ export const JoinTokenPage: React.FC = () => {
   }, [token, navigate]);
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center">
-      <div className="w-full max-w-sm flex flex-col items-center bg-white rounded-3xl p-8 shadow-sm border border-slate-200/80">
+    <div className="min-h-dvh min-h-[100dvh] bg-slate-50 flex flex-col items-center justify-center p-4 sm:p-6 text-center">
+      <div className="w-full max-w-sm flex flex-col items-center bg-white rounded-2xl sm:rounded-3xl p-6 sm:p-8 shadow-sm border border-slate-200/80">
         <AdunLogo size={68} showText />
 
-        <div className="mt-8 mb-4">
+        <div className="mt-6 sm:mt-8 mb-4">
           <RefreshCw className="w-8 h-8 text-[#1E40AF] animate-spin mx-auto" />
         </div>
 
         <h3 className="text-base font-bold text-slate-900 mb-1">
           Validating Lecture Session
         </h3>
-        <p className="text-xs text-slate-500 max-w-[220px]">
+        <p className="text-xs text-slate-500 max-w-[240px]">
           Verifying security token with ADUN attendance server...
         </p>
 
         {errorMsg && (
-          <div className="mt-6 p-3 bg-red-50 border border-red-200 rounded-2xl text-left flex items-start gap-2.5">
+          <div className="mt-6 p-3.5 bg-red-50 border border-red-200 rounded-2xl text-left flex items-start gap-2.5 w-full">
             <ShieldAlert className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-            <div className="text-xs text-red-800">
-              <p className="font-semibold">{errorMsg}</p>
+            <div className="text-xs text-red-800 flex-1 min-w-0">
+              <p className="font-semibold break-words">{errorMsg}</p>
               {rateLimitedUntil ? (
                 <p className="mt-1 text-slate-600 font-medium">
                   Retry available in{' '}
@@ -184,7 +184,7 @@ export const JoinTokenPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => window.location.reload()}
-                  className="mt-2 text-[#1E40AF] font-bold underline"
+                  className="mt-2.5 inline-block text-[#1E40AF] font-bold underline active:opacity-75 py-1"
                 >
                   Retry verification
                 </button>

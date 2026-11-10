@@ -279,18 +279,18 @@ export const AnalyticsPage: React.FC = () => {
       </div>
 
       {/* Global Filters */}
-      <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs flex flex-wrap items-center justify-between gap-3">
+      <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-          <Filter className="w-4 h-4 text-blue-700" />
+          <Filter className="w-4 h-4 text-blue-700 shrink-0" />
           <span>Filters:</span>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="grid grid-cols-1 sm:flex sm:flex-wrap items-center gap-2.5 w-full sm:w-auto">
           {/* Course filter */}
           <select
             value={selectedCourseId}
             onChange={e => setSelectedCourseId(e.target.value)}
-            className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+            className="w-full sm:w-auto px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600 truncate max-w-full sm:max-w-xs"
           >
             <option value="all">All Courses</option>
             {courses.map(c => (
@@ -304,7 +304,7 @@ export const AnalyticsPage: React.FC = () => {
           <select
             value={selectedLecturerId}
             onChange={e => setSelectedLecturerId(e.target.value)}
-            className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+            className="w-full sm:w-auto px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
           >
             <option value="all">All Lecturers</option>
             {lecturers.map(l => (
@@ -318,7 +318,7 @@ export const AnalyticsPage: React.FC = () => {
           <select
             value={selectedDateRange}
             onChange={e => setSelectedDateRange(e.target.value)}
-            className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+            className="w-full sm:w-auto px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
           >
             <option value="all">All Time (Full Semester)</option>
             <option value="7">Last 7 Days</option>
@@ -368,16 +368,16 @@ export const AnalyticsPage: React.FC = () => {
           {/* Row 1: Attendance by Course & Status Breakdown */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Attendance by Course Bar Chart */}
-            <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
+            <div className="lg:col-span-2 bg-white p-4 sm:p-6 rounded-2xl border border-slate-200/80 shadow-xs min-w-0">
               <h2 className="text-base font-bold text-slate-900 mb-1">Attendance by Course</h2>
               <p className="text-xs text-slate-500 mb-5">Present vs late volume per course</p>
 
-              <div className="h-72">
+              <div className="h-72 w-full min-w-0">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={courseChartData} margin={{ top: 10, right: 10, left: -20, bottom: 20 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
-                    <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#64748B' }} />
-                    <YAxis tick={{ fontSize: 12, fill: '#64748B' }} />
+                    <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#64748B' }} />
+                    <YAxis tick={{ fontSize: 11, fill: '#64748B' }} />
                     <Tooltip
                       contentStyle={{ backgroundColor: '#0F172A', borderRadius: '12px', color: '#FFF' }}
                     />
@@ -390,12 +390,12 @@ export const AnalyticsPage: React.FC = () => {
             </div>
 
             {/* Present vs Late Donut Chart */}
-            <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col justify-between">
+            <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col justify-between min-w-0">
               <div>
                 <h2 className="text-base font-bold text-slate-900 mb-1">Punctuality Breakdown</h2>
                 <p className="text-xs text-slate-500 mb-4">Overall arrival status proportion</p>
 
-                <div className="h-56 flex items-center justify-center">
+                <div className="h-56 w-full min-w-0 flex items-center justify-center">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie
@@ -433,16 +433,16 @@ export const AnalyticsPage: React.FC = () => {
           {/* Row 2: Attendance by Student Level & Session Timeline */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Level Distribution */}
-            <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
+            <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200/80 shadow-xs min-w-0">
               <h2 className="text-base font-bold text-slate-900 mb-1">Attendance by Academic Level</h2>
               <p className="text-xs text-slate-500 mb-5">Volume across 100L through 500L cohorts</p>
 
-              <div className="h-64">
+              <div className="h-64 w-full min-w-0">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={levelChartData} margin={{ top: 10, right: 10, left: -20, bottom: 20 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
-                    <XAxis dataKey="level" tick={{ fontSize: 12, fill: '#64748B' }} />
-                    <YAxis tick={{ fontSize: 12, fill: '#64748B' }} />
+                    <XAxis dataKey="level" tick={{ fontSize: 11, fill: '#64748B' }} />
+                    <YAxis tick={{ fontSize: 11, fill: '#64748B' }} />
                     <Tooltip
                       contentStyle={{ backgroundColor: '#0F172A', borderRadius: '12px', color: '#FFF' }}
                     />
@@ -455,11 +455,11 @@ export const AnalyticsPage: React.FC = () => {
             </div>
 
             {/* Attendance by Session Timeline */}
-            <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
+            <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200/80 shadow-xs min-w-0">
               <h2 className="text-base font-bold text-slate-900 mb-1">Session Attendance Trend</h2>
               <p className="text-xs text-slate-500 mb-5">Chronological student headcount over recent sessions</p>
 
-              <div className="h-64">
+              <div className="h-64 w-full min-w-0">
                 {sessionChartData.length === 0 ? (
                   <div className="h-full flex items-center justify-center text-xs text-slate-400">
                     No session timeline data available.
@@ -468,8 +468,8 @@ export const AnalyticsPage: React.FC = () => {
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={sessionChartData} margin={{ top: 10, right: 10, left: -20, bottom: 20 }}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
-                      <XAxis dataKey="date" tick={{ fontSize: 12, fill: '#64748B' }} />
-                      <YAxis tick={{ fontSize: 12, fill: '#64748B' }} />
+                      <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#64748B' }} />
+                      <YAxis tick={{ fontSize: 11, fill: '#64748B' }} />
                       <Tooltip
                         contentStyle={{ backgroundColor: '#0F172A', borderRadius: '12px', color: '#FFF' }}
                       />
@@ -489,7 +489,7 @@ export const AnalyticsPage: React.FC = () => {
           </div>
 
           {/* Row 3: Student Attendance Distribution */}
-          <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
+          <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200/80 shadow-xs min-w-0">
             <h2 className="text-base font-bold text-slate-900 mb-1">Student Attendance % Distribution</h2>
             <p className="text-xs text-slate-500 mb-4">
               Proportion of student body meeting institutional examination eligibility threshold (75% minimum)
@@ -524,25 +524,25 @@ export const AnalyticsPage: React.FC = () => {
 
       {/* OFFICIAL INSTITUTIONAL REPORT MODAL */}
       {showReportModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-4 overflow-y-auto">
-          <div className="w-full max-w-4xl bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden my-8">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-2 sm:p-4 overflow-y-auto">
+          <div className="w-full max-w-4xl bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden my-4 sm:my-8 max-h-[92vh] flex flex-col">
             {/* Modal Controls Header */}
-            <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between print:hidden">
+            <div className="px-4 sm:px-6 py-4 bg-slate-900 text-white flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
-                <FileText className="w-5 h-5 text-blue-400" />
-                <h3 className="font-bold text-base">Executive Institutional Attendance Report</h3>
+                <FileText className="w-5 h-5 text-blue-400 shrink-0" />
+                <h3 className="font-bold text-sm sm:text-base truncate">Executive Institutional Attendance Report</h3>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 sm:gap-3 shrink-0">
                 <button
                   onClick={() => window.print()}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-bold text-white transition shadow-2xs cursor-pointer"
                 >
                   <Printer className="w-3.5 h-3.5" />
-                  <span>Print / Save PDF</span>
+                  <span className="hidden xs:inline">Print / Save PDF</span>
                 </button>
                 <button
                   onClick={() => setShowReportModal(false)}
-                  className="text-slate-400 hover:text-white cursor-pointer"
+                  className="text-slate-400 hover:text-white cursor-pointer p-1"
                 >
                   <X className="w-5 h-5" />
                 </button>
@@ -550,11 +550,11 @@ export const AnalyticsPage: React.FC = () => {
             </div>
 
             {/* Printable Document Body */}
-            <div className="p-8 sm:p-12 space-y-6 print:p-0 print:m-0">
+            <div className="p-4 sm:p-8 md:p-12 space-y-6 overflow-y-auto print:p-0 print:m-0">
               {/* Official Crest Header */}
-              <div className="flex items-center justify-between border-b-2 border-blue-900 pb-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b-2 border-blue-900 pb-4 gap-2">
                 <div>
-                  <h2 className="text-xl font-black text-blue-950 tracking-tight">
+                  <h2 className="text-lg sm:text-xl font-black text-blue-950 tracking-tight">
                     ADMIRALTY UNIVERSITY OF NIGERIA
                   </h2>
                   <p className="text-xs font-semibold text-slate-600">
@@ -562,7 +562,7 @@ export const AnalyticsPage: React.FC = () => {
                   </p>
                   <p className="text-[11px] text-slate-500">Ibusa / Asaba Campus, Delta State, Nigeria</p>
                 </div>
-                <div className="text-right text-xs">
+                <div className="text-left sm:text-right text-xs">
                   <span className="font-mono px-2.5 py-1 bg-slate-100 rounded-md font-bold text-slate-800">
                     STATUS: OFFICIAL
                   </span>
@@ -572,31 +572,31 @@ export const AnalyticsPage: React.FC = () => {
 
               {/* Report Title */}
               <div className="text-center py-2 bg-blue-50/60 rounded-xl border border-blue-100">
-                <h3 className="text-base font-extrabold text-blue-950 uppercase tracking-wide">
+                <h3 className="text-sm sm:text-base font-extrabold text-blue-950 uppercase tracking-wide">
                   Semester Institutional Attendance &amp; Examination Eligibility Audit
                 </h3>
-                <p className="text-xs text-blue-800/80">
+                <p className="text-[11px] sm:text-xs text-blue-800/80">
                   Dual-GPS Geofencing, Facial Biometric Verification &amp; Option 2 Strict Hardware Binding
                 </p>
               </div>
 
               {/* Key Metrics Grid */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 py-2">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 py-2">
                 <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
-                  <span className="text-[11px] text-slate-500 font-semibold uppercase">Total Students</span>
-                  <p className="text-xl font-black text-slate-900 mt-1">{students.length}</p>
+                  <span className="text-[10px] sm:text-[11px] text-slate-500 font-semibold uppercase">Total Students</span>
+                  <p className="text-lg sm:text-xl font-black text-slate-900 mt-1">{students.length}</p>
                 </div>
                 <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
-                  <span className="text-[11px] text-slate-500 font-semibold uppercase">Active Courses</span>
-                  <p className="text-xl font-black text-blue-900 mt-1">{filteredCourses.length}</p>
+                  <span className="text-[10px] sm:text-[11px] text-slate-500 font-semibold uppercase">Active Courses</span>
+                  <p className="text-lg sm:text-xl font-black text-blue-900 mt-1">{filteredCourses.length}</p>
                 </div>
                 <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
-                  <span className="text-[11px] text-slate-500 font-semibold uppercase">Lectures Monitored</span>
-                  <p className="text-xl font-black text-indigo-900 mt-1">{filteredSessions.length}</p>
+                  <span className="text-[10px] sm:text-[11px] text-slate-500 font-semibold uppercase">Lectures Monitored</span>
+                  <p className="text-lg sm:text-xl font-black text-indigo-900 mt-1">{filteredSessions.length}</p>
                 </div>
                 <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
-                  <span className="text-[11px] text-slate-500 font-semibold uppercase">Total Check-Ins</span>
-                  <p className="text-xl font-black text-emerald-900 mt-1">{filteredRecords.length}</p>
+                  <span className="text-[10px] sm:text-[11px] text-slate-500 font-semibold uppercase">Total Check-Ins</span>
+                  <p className="text-lg sm:text-xl font-black text-emerald-900 mt-1">{filteredRecords.length}</p>
                 </div>
               </div>
 
@@ -605,8 +605,8 @@ export const AnalyticsPage: React.FC = () => {
                 <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
                   Course Level Attendance Performance
                 </h4>
-                <div className="border border-slate-200 rounded-xl overflow-hidden">
-                  <table className="w-full text-left text-xs">
+                <div className="border border-slate-200 rounded-xl overflow-x-auto">
+                  <table className="w-full min-w-[520px] text-left text-xs">
                     <thead>
                       <tr className="bg-slate-100 border-b border-slate-200 font-bold text-slate-700">
                         <th className="py-2.5 px-3">Course Code</th>
@@ -653,7 +653,7 @@ export const AnalyticsPage: React.FC = () => {
               </div>
 
               {/* Signatures & Certification Block */}
-              <div className="pt-8 grid grid-cols-2 gap-8 text-xs border-t border-slate-200">
+              <div className="pt-8 grid grid-cols-1 sm:grid-cols-2 gap-8 text-xs border-t border-slate-200">
                 <div className="space-y-8">
                   <div className="border-b border-slate-400 w-48" />
                   <div>
@@ -662,8 +662,8 @@ export const AnalyticsPage: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="space-y-8 text-right">
-                  <div className="border-b border-slate-400 w-48 ml-auto" />
+                <div className="space-y-8 text-left sm:text-right">
+                  <div className="border-b border-slate-400 w-48 sm:ml-auto" />
                   <div>
                     <p className="font-bold text-slate-900">Director of ICT &amp; Systems</p>
                     <p className="text-slate-500 text-[11px]">Admiralty University of Nigeria</p>

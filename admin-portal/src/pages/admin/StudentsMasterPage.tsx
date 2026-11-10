@@ -259,16 +259,16 @@ export const StudentsMasterPage: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3 w-full sm:w-auto">
           <button
             onClick={handleDownloadSample}
-            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition"
+            className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition flex-1 sm:flex-initial"
           >
             <Download className="w-3.5 h-3.5" />
             <span>Sample Template (.xlsx)</span>
           </button>
 
-          <label className="cursor-pointer inline-flex items-center gap-2 px-4 py-2 bg-blue-700 hover:bg-blue-800 active:bg-blue-900 text-white font-semibold text-sm rounded-xl transition shadow-xs">
+          <label className="cursor-pointer inline-flex items-center justify-center gap-2 px-4 py-2 bg-blue-700 hover:bg-blue-800 active:bg-blue-900 text-white font-semibold text-sm rounded-xl transition shadow-xs flex-1 sm:flex-initial">
             <UploadCloud className="w-4 h-4" />
             <span>Upload Spreadsheet</span>
             <input
@@ -307,12 +307,12 @@ export const StudentsMasterPage: React.FC = () => {
           />
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 w-full md:w-auto">
           {/* Level Filter */}
           <select
             value={filterLevel}
             onChange={e => setFilterLevel(e.target.value)}
-            className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+            className="w-full sm:w-auto px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
           >
             <option value="all">All Levels</option>
             <option value="100">100 Level</option>
@@ -326,7 +326,7 @@ export const StudentsMasterPage: React.FC = () => {
           <select
             value={filterProgram}
             onChange={e => setFilterProgram(e.target.value)}
-            className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+            className="w-full sm:w-auto px-3 py-2 text-xs font-semibold rounded-xl bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-600"
           >
             <option value="all">All Programs</option>
             {programs.map(p => (
@@ -355,17 +355,17 @@ export const StudentsMasterPage: React.FC = () => {
         />
       ) : (
         <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
-          <div className="px-6 py-3.5 bg-slate-50/75 border-b border-slate-200 flex items-center justify-between text-xs text-slate-600">
+          <div className="px-4 sm:px-6 py-3.5 bg-slate-50/75 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs text-slate-600">
             <span className="font-semibold">
               Showing {filteredStudents.length} of {students.length} students
             </span>
-            <span className="font-mono text-slate-500">
+            <span className="font-mono text-slate-500 text-[11px]">
               Preserving leading zeros &bull; Case-insensitive lookup
             </span>
           </div>
 
           <div className="overflow-x-auto max-h-[600px]">
-            <table className="w-full text-left border-collapse">
+            <table className="w-full min-w-[700px] text-left border-collapse">
               <thead className="sticky top-0 bg-slate-100/90 backdrop-blur-xs z-10 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
                 <tr>
                   <th className="py-3 px-4">Matriculation No</th>
@@ -410,26 +410,26 @@ export const StudentsMasterPage: React.FC = () => {
 
       {/* IMPORT PREVIEW MODAL */}
       {uploadPreview && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto">
           <div className="w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
             {/* Header */}
-            <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2.5">
-                <FileSpreadsheet className="w-5 h-5 text-blue-400" />
-                <div>
-                  <h3 className="font-bold text-base">Import Validation Preview</h3>
-                  <p className="text-xs text-slate-400">{uploadPreview.fileName}</p>
+            <div className="px-4 sm:px-6 py-4 bg-slate-900 text-white flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2.5 truncate">
+                <FileSpreadsheet className="w-5 h-5 text-blue-400 shrink-0" />
+                <div className="truncate">
+                  <h3 className="font-bold text-base truncate">Import Validation Preview</h3>
+                  <p className="text-xs text-slate-400 truncate">{uploadPreview.fileName}</p>
                 </div>
               </div>
-              <button onClick={() => setUploadPreview(null)} className="text-slate-400 hover:text-white">
+              <button onClick={() => setUploadPreview(null)} className="text-slate-400 hover:text-white p-1">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             {/* Body */}
-            <div className="p-6 overflow-y-auto space-y-5">
+            <div className="p-4 sm:p-6 overflow-y-auto space-y-5">
               {/* Stat Summary */}
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-center">
                   <p className="text-xs text-slate-500 font-medium">Total Rows In File</p>
                   <p className="text-2xl font-extrabold text-slate-800 mt-1">{uploadPreview.total}</p>
@@ -449,7 +449,7 @@ export const StudentsMasterPage: React.FC = () => {
                 <label className="block text-xs font-semibold text-slate-700 mb-2">
                   Directory Update Mode:
                 </label>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <label
                     className={`p-3 rounded-xl border cursor-pointer text-xs transition ${
                       importMode === 'append'
@@ -520,17 +520,17 @@ export const StudentsMasterPage: React.FC = () => {
             </div>
 
             {/* Footer */}
-            <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-3 shrink-0">
+            <div className="px-4 sm:px-6 py-4 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2 sm:gap-3 shrink-0">
               <button
                 onClick={() => setUploadPreview(null)}
-                className="px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-200 rounded-xl"
+                className="px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-200 rounded-xl text-center"
               >
                 Cancel
               </button>
               <button
                 onClick={handleConfirmImport}
                 disabled={uploadPreview.accepted.length === 0}
-                className="px-5 py-2 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-50 rounded-xl shadow-xs"
+                className="px-5 py-2.5 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-50 rounded-xl shadow-xs text-center"
               >
                 Import {uploadPreview.accepted.length} Valid Students
               </button>

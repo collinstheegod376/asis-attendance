@@ -490,9 +490,9 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
   };
 
   return (
-    <div className="flex flex-col items-center w-full max-w-sm mx-auto px-4 py-2">
+    <div className="flex flex-col items-center w-full max-w-sm mx-auto px-2 sm:px-4 py-1 sm:py-2 min-w-0">
       {/* Viewfinder Circle HUD */}
-      <div className="relative w-64 h-64 sm:w-72 sm:h-72 my-3 flex items-center justify-center">
+      <div className="relative w-52 h-52 min-[360px]:w-60 min-[360px]:h-60 sm:w-68 sm:h-68 my-2 sm:my-3 flex items-center justify-center shrink-0">
         {/* Animated Dashed Rotating Outer Ring */}
         <div
           className={`absolute inset-0 rounded-full border-4 border-dashed transition-colors duration-300 pointer-events-none ${
@@ -536,29 +536,29 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
           {/* Centering crosshairs overlay */}
           {!capturedImage && !timedOut && (
             <div className="absolute inset-0 pointer-events-none flex items-center justify-center opacity-30">
-              <div className="w-16 h-16 border border-white/50 rounded-full" />
-              <div className="absolute w-24 h-0.5 bg-white/40" />
-              <div className="absolute h-24 w-0.5 bg-white/40" />
+              <div className="w-14 h-14 sm:w-16 sm:h-16 border border-white/50 rounded-full" />
+              <div className="absolute w-20 sm:w-24 h-0.5 bg-white/40" />
+              <div className="absolute h-20 sm:h-24 w-0.5 bg-white/40" />
             </div>
           )}
 
           {/* Loading stream spinner */}
           {!streamActive && !permissionError && cameraStarted && !timedOut && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/80 text-white text-xs gap-2">
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/80 text-white text-xs gap-2 p-2 text-center">
               <RefreshCw className="w-6 h-6 animate-spin text-blue-400" />
-              <span>{modelLoading ? 'Initializing face mesh...' : 'Starting camera...'}</span>
+              <span className="text-[11px]">{modelLoading ? 'Initializing face mesh...' : 'Starting camera...'}</span>
             </div>
           )}
 
           {/* iOS User Gesture Initial Tap */}
           {!cameraStarted && !capturedImage && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-white text-xs p-4 text-center gap-3">
-              <Camera className="w-8 h-8 text-blue-400" />
-              <p className="font-semibold text-slate-200">Camera access required</p>
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-white text-xs p-3 sm:p-4 text-center gap-2 sm:gap-3">
+              <Camera className="w-7 h-7 sm:w-8 sm:h-8 text-blue-400" />
+              <p className="font-semibold text-slate-200 text-xs">Camera access required</p>
               <button
                 type="button"
                 onClick={startCamera}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-full font-bold shadow-md"
+                className="px-4 py-2 min-h-[38px] bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-full font-bold shadow-md text-xs"
               >
                 Enable Camera
               </button>
@@ -567,16 +567,16 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
 
           {/* 15s Timeout state */}
           {timedOut && !capturedImage && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-white text-xs p-4 text-center gap-3">
-              <AlertCircle className="w-8 h-8 text-amber-400" />
-              <p className="font-semibold text-slate-200">Liveness timeout (15s)</p>
-              <p className="text-[11px] text-slate-400">
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-white text-xs p-3 sm:p-4 text-center gap-2 sm:gap-3">
+              <AlertCircle className="w-7 h-7 sm:w-8 sm:h-8 text-amber-400" />
+              <p className="font-semibold text-slate-200 text-xs">Liveness timeout (15s)</p>
+              <p className="text-[10px] text-slate-400">
                 Liveness check could not be completed.
               </p>
               <button
                 type="button"
                 onClick={handleRetry}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-full font-bold shadow-md flex items-center gap-1.5"
+                className="px-4 py-2 min-h-[38px] bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-full font-bold shadow-md flex items-center gap-1.5 text-xs"
               >
                 <RefreshCw className="w-3.5 h-3.5" /> Retry verification
               </button>
@@ -598,8 +598,8 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
       {permissionError && (
         <div className="w-full p-3 mb-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2.5 text-xs text-red-800">
           <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <p className="font-semibold">{permissionError}</p>
+          <div className="flex-1 min-w-0">
+            <p className="font-semibold break-words">{permissionError}</p>
             <button
               onClick={startCamera}
               className="mt-2 text-xs font-bold text-red-700 underline"
@@ -612,42 +612,42 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
 
       {/* Status & Live Challenge Box */}
       {capturedImage ? (
-        <div className="w-full bg-emerald-50 border border-emerald-200 rounded-2xl p-3.5 mb-4 text-center">
-          <div className="flex items-center justify-center gap-1.5 text-emerald-800 font-bold text-sm mb-1">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-            Liveness verified · Photo captured
+        <div className="w-full bg-emerald-50 border border-emerald-200 rounded-2xl p-3 sm:p-3.5 mb-3 text-center">
+          <div className="flex items-center justify-center gap-1.5 text-emerald-800 font-bold text-xs sm:text-sm mb-1">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>Liveness verified · Photo captured</span>
           </div>
-          <p className="text-xs text-slate-600">
+          <p className="text-[11px] sm:text-xs text-slate-600">
             Submitting verified selfie to university storage...
           </p>
           <button
             onClick={handleRetry}
             type="button"
-            className="mt-2.5 inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-blue-800 px-3 py-1 bg-white border border-slate-200 rounded-full shadow-xs transition-colors"
+            className="mt-2.5 min-h-[36px] inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-blue-800 px-3 py-1 bg-white border border-slate-200 rounded-full shadow-xs transition-colors"
           >
             <RefreshCw className="w-3 h-3" /> Retake photo
           </button>
         </div>
       ) : (
-        <div className="w-full text-center mb-4">
+        <div className="w-full text-center mb-3">
           {/* Liveness Challenge Card */}
-          <div className="bg-blue-50 border border-blue-200/80 rounded-2xl p-3 shadow-xs">
-            <div className="flex items-center justify-center gap-2 mb-1">
-              {challenge.type === 'blink' && <Eye className="w-4 h-4 text-blue-700" />}
-              {challenge.type === 'turn_left' && <ArrowLeftCircle className="w-4 h-4 text-blue-700" />}
-              {challenge.type === 'smile' && <Smile className="w-4 h-4 text-blue-700" />}
-              <span className="text-xs font-extrabold text-blue-950 uppercase tracking-wider">
+          <div className="bg-blue-50 border border-blue-200/80 rounded-2xl p-2.5 sm:p-3 shadow-xs">
+            <div className="flex items-center justify-center gap-1.5 mb-1">
+              {challenge.type === 'blink' && <Eye className="w-4 h-4 text-blue-700 shrink-0" />}
+              {challenge.type === 'turn_left' && <ArrowLeftCircle className="w-4 h-4 text-blue-700 shrink-0" />}
+              {challenge.type === 'smile' && <Smile className="w-4 h-4 text-blue-700 shrink-0" />}
+              <span className="text-[11px] sm:text-xs font-extrabold text-blue-950 uppercase tracking-wider">
                 Liveness Challenge
               </span>
             </div>
 
-            <p className="text-sm font-bold text-blue-900 mb-1">
+            <p className="text-xs sm:text-sm font-bold text-blue-900 mb-1.5 break-words">
               {challenge.prompt}
             </p>
 
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white border border-blue-200 text-blue-800 text-[11px] font-medium shadow-xs">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span>{challenge.progressText}</span>
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white border border-blue-200 text-blue-800 text-[10px] min-[360px]:text-[11px] font-medium shadow-xs max-w-full">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+              <span className="truncate">{challenge.progressText}</span>
             </div>
           </div>
         </div>

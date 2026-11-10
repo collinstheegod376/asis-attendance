@@ -92,17 +92,17 @@ export const AdminHomePage: React.FC = () => {
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full md:w-auto">
             <Link
               to="/admin/lecturers"
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white text-blue-900 hover:bg-blue-50 active:bg-blue-100 text-sm font-semibold transition shadow-xs"
+              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white text-blue-900 hover:bg-blue-50 active:bg-blue-100 text-sm font-semibold transition shadow-xs w-full sm:w-auto"
             >
               <UserPlus className="w-4 h-4 text-blue-700" />
               <span>Create Lecturer</span>
             </Link>
             <Link
               to="/admin/students"
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-700/80 hover:bg-blue-700 border border-blue-500/50 text-white text-sm font-semibold transition"
+              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-700/80 hover:bg-blue-700 border border-blue-500/50 text-white text-sm font-semibold transition w-full sm:w-auto"
             >
               <UploadCloud className="w-4 h-4" />
               <span>Upload Master Roster</span>
@@ -385,7 +385,7 @@ export const AdminHomePage: React.FC = () => {
               const actorDisplay = log.actor_name || log.actor_role || 'System';
               const initial = actorDisplay.charAt(0).toUpperCase();
               return (
-                <div key={log.id} className="py-3 flex items-center justify-between gap-4 text-xs">
+                <div key={log.id} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4 text-xs">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-full bg-blue-50 text-blue-700 flex items-center justify-center font-bold text-[10px] shrink-0">
                       {initial}
@@ -403,7 +403,7 @@ export const AdminHomePage: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="text-right text-slate-400 font-mono text-[11px] shrink-0">
+                  <div className="text-left sm:text-right text-slate-400 font-mono text-[11px] shrink-0 pl-11 sm:pl-0">
                     {new Date(log.created_at).toLocaleString('en-GB', {
                       timeZone: 'Africa/Lagos',
                       dateStyle: 'short',

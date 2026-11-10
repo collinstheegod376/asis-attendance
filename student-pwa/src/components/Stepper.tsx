@@ -33,7 +33,7 @@ export const Stepper: React.FC<StepperProps> = ({ currentStep }) => {
   const currentIndex = getStepIndex(currentStep);
 
   return (
-    <div className="w-full flex items-center justify-between px-1 py-3 mb-3">
+    <div className="w-full flex items-center justify-between px-0.5 sm:px-1 py-2 sm:py-3 mb-2 sm:mb-3 overflow-hidden">
       {steps.map((step, idx) => {
         const isActive = idx === currentIndex;
         const isCompleted = idx < currentIndex;
@@ -41,7 +41,7 @@ export const Stepper: React.FC<StepperProps> = ({ currentStep }) => {
         return (
           <React.Fragment key={step.key}>
             <div
-              className={`flex items-center gap-1 sm:gap-1.5 px-2.5 py-1.5 rounded-full text-[11px] sm:text-xs font-semibold transition-all duration-300 ${
+              className={`flex items-center gap-1 sm:gap-1.5 px-1.5 min-[360px]:px-2.5 py-1 sm:py-1.5 rounded-full text-[10px] min-[360px]:text-[11px] sm:text-xs font-semibold transition-all duration-300 shrink-0 ${
                 isActive
                   ? 'bg-blue-800 text-white shadow-sm shadow-blue-900/20 ring-2 ring-blue-600/30'
                   : isCompleted
@@ -50,7 +50,7 @@ export const Stepper: React.FC<StepperProps> = ({ currentStep }) => {
               }`}
             >
               <div
-                className={`w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full flex items-center justify-center text-[9px] sm:text-[10px] font-bold ${
+                className={`w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full flex items-center justify-center text-[9px] sm:text-[10px] font-bold shrink-0 ${
                   isActive
                     ? 'bg-white text-blue-900'
                     : isCompleted
@@ -60,12 +60,12 @@ export const Stepper: React.FC<StepperProps> = ({ currentStep }) => {
               >
                 {isCompleted ? <Check className="w-2.5 h-2.5 stroke-[3]" /> : step.num}
               </div>
-              <span className="tracking-tight">{step.label}</span>
+              <span className="tracking-tight whitespace-nowrap">{step.label}</span>
             </div>
 
             {idx < steps.length - 1 && (
               <div
-                className={`flex-1 h-0.5 mx-1 transition-colors duration-300 ${
+                className={`flex-1 min-w-1 sm:min-w-2 h-0.5 mx-0.5 min-[360px]:mx-1 transition-colors duration-300 ${
                   idx < currentIndex ? 'bg-blue-500' : 'bg-slate-200'
                 }`}
               />

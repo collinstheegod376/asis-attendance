@@ -12,6 +12,21 @@
     --success: #10b981;
     --danger: #ef4444;
     --warning: #f59e0b;
+    --sat: env(safe-area-inset-top, 0px);
+    --sab: env(safe-area-inset-bottom, 0px);
+    --sal: env(safe-area-inset-left, 0px);
+    --sar: env(safe-area-inset-right, 0px);
+  }
+
+  html,
+  body,
+  #root {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+    touch-action: manipulation;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
   }
 
   body {
@@ -24,10 +39,20 @@
     -moz-osx-font-smoothing: grayscale;
     min-height: 100vh;
     min-height: 100dvh;
+    -webkit-tap-highlight-color: transparent;
   }
 
   * {
     box-sizing: border-box;
+  }
+}
+
+/* Enforce 16px font-size on all mobile inputs to permanently prevent iOS Safari auto-zoom */
+@media (max-width: 768px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
   }
 }
 

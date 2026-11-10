@@ -268,14 +268,14 @@ export const SettingsPage: React.FC = () => {
               <label className="block text-xs font-semibold text-slate-700 mb-1">
                 GPS Accuracy Threshold (Metres)
               </label>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
                 <input
                   type="number"
                   min="10"
                   max="200"
                   value={settings.location_accuracy_threshold_m}
                   onChange={e => setSettings({ ...settings, location_accuracy_threshold_m: parseInt(e.target.value, 10) || 50 })}
-                  className="w-32 px-3.5 py-2 text-sm rounded-xl border border-slate-300 font-mono"
+                  className="w-full sm:w-32 px-3.5 py-2 text-sm rounded-xl border border-slate-300 font-mono"
                 />
                 <span className="text-xs text-slate-500">
                   Maximum allowable browser GPS accuracy circle (Default 50m). Readings with worse accuracy trigger a student retry.
@@ -438,10 +438,10 @@ export const SettingsPage: React.FC = () => {
         </div>
 
         {/* Save button */}
-        <div className="pt-2 flex justify-end">
+        <div className="pt-2 flex flex-col sm:flex-row justify-end">
           <button
             type="submit"
-            className="inline-flex items-center gap-2 px-6 py-2.5 bg-blue-700 hover:bg-blue-800 active:bg-blue-900 text-white font-semibold text-sm rounded-xl transition shadow-xs"
+            className="w-full sm:w-auto justify-center inline-flex items-center gap-2 px-6 py-2.5 bg-blue-700 hover:bg-blue-800 active:bg-blue-900 text-white font-semibold text-sm rounded-xl transition shadow-xs"
           >
             <Save className="w-4 h-4" />
             <span>Save Configuration</span>

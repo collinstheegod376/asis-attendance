@@ -188,7 +188,7 @@ export const AttendVideoPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col items-center">
+    <div className="min-h-dvh min-h-[100dvh] bg-slate-50 flex flex-col items-center overflow-x-hidden">
       {/* Header with Step 4 (Submit) */}
       <Header
         currentStep="submit"
@@ -196,9 +196,9 @@ export const AttendVideoPage: React.FC = () => {
         courseTitle={attempt?.session?.course_title}
       />
 
-      <div className="w-full max-w-sm px-4 py-3 flex-1 flex flex-col">
+      <div className="w-full max-w-sm px-3 sm:px-4 py-2 sm:py-3 flex-1 flex flex-col min-w-0">
         {/* Video Card */}
-        <div className="w-full bg-white rounded-3xl p-5 shadow-sm border border-slate-200/80 mb-4">
+        <div className="w-full bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-5 shadow-sm border border-slate-200/80 mb-3 sm:mb-4 min-w-0">
           <div className="text-center mb-3">
             <h2 className="text-base font-bold text-slate-900 tracking-tight">
               Course Lecture Guidelines
@@ -272,7 +272,7 @@ export const AttendVideoPage: React.FC = () => {
             </svg>
           </div>
 
-          <div className="mt-3.5 flex items-start gap-2 bg-blue-50/70 p-3 rounded-xl border border-blue-100 text-xs text-blue-950">
+          <div className="mt-3 sm:mt-3.5 flex items-start gap-2 bg-blue-50/70 p-3 rounded-xl border border-blue-100 text-xs text-blue-950">
             <Info className="w-4 h-4 text-[#1E40AF] shrink-0 mt-0.5" />
             <p className="leading-snug">
               By confirming, you certify that you are physically in attendance and using your own registered personal device.
@@ -284,8 +284,8 @@ export const AttendVideoPage: React.FC = () => {
         {submitError && (
           <div className="mb-4 p-3.5 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-2.5 text-xs text-red-800">
             <ShieldAlert className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <p className="font-semibold">{submitError}</p>
+            <div className="flex-1 min-w-0">
+              <p className="font-semibold break-words">{submitError}</p>
             </div>
           </div>
         )}
@@ -296,7 +296,7 @@ export const AttendVideoPage: React.FC = () => {
             type="button"
             onClick={handleSubmit}
             disabled={submitting}
-            className="w-full flex items-center justify-center gap-2 bg-[#1E40AF] hover:bg-blue-800 active:bg-blue-900 disabled:bg-slate-300 text-white font-semibold text-xs py-4 px-4 rounded-xl shadow-md transition-all active:scale-[0.99]"
+            className="w-full min-h-[48px] flex items-center justify-center gap-2 bg-[#1E40AF] hover:bg-blue-800 active:bg-blue-900 disabled:bg-slate-300 text-white font-semibold text-xs py-3.5 sm:py-4 px-4 rounded-xl shadow-md transition-all active:scale-[0.99]"
           >
             {submitting ? (
               <>

@@ -334,7 +334,7 @@ export const AttendIdentityPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col items-center">
+    <div className="min-h-dvh min-h-[100dvh] bg-slate-50 flex flex-col items-center overflow-x-hidden">
       {/* Header with Step 1 (Details) */}
       <Header
         currentStep="identity"
@@ -342,17 +342,17 @@ export const AttendIdentityPage: React.FC = () => {
         courseTitle={attempt?.session?.course_title}
       />
 
-      <div className="w-full max-w-sm px-4 py-3 flex-1 flex flex-col">
+      <div className="w-full max-w-sm px-3 sm:px-4 py-2 sm:py-3 flex-1 flex flex-col min-w-0">
         {/* Step Guide Card */}
-        <div className="w-full bg-white rounded-3xl p-6 shadow-sm border border-slate-200/80 mb-4">
-          <div className="w-12 h-12 rounded-2xl bg-blue-50 border border-blue-100 text-[#1E40AF] flex items-center justify-center mb-3">
-            <UserCheck className="w-6 h-6" />
+        <div className="w-full bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/80 mb-3 sm:mb-4 min-w-0">
+          <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-blue-50 border border-blue-100 text-[#1E40AF] flex items-center justify-center mb-3">
+            <UserCheck className="w-5 h-5 sm:w-6 sm:h-6" />
           </div>
 
           <h2 className="text-base font-bold text-slate-900 tracking-tight mb-1">
             Student Identification
           </h2>
-          <p className="text-xs text-slate-500 mb-5">
+          <p className="text-xs text-slate-500 mb-4 sm:mb-5">
             Type your matriculation number to verify enrollment
           </p>
 
@@ -360,8 +360,8 @@ export const AttendIdentityPage: React.FC = () => {
           {errorBanner && (
             <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-2.5 text-xs text-red-800">
               <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <p className="font-semibold">{errorBanner}</p>
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold break-words">{errorBanner}</p>
                 {rateLimitedUntil && (
                   <p className="mt-1 text-slate-600">
                     Retry in <strong>{rateLimitSeconds}s</strong>
@@ -373,7 +373,7 @@ export const AttendIdentityPage: React.FC = () => {
 
           {/* Matric Input Form */}
           {!foundStudent && (
-            <div className="space-y-4">
+            <div className="space-y-3 sm:space-y-4">
               <div>
                 <label
                   htmlFor="matricInput"
@@ -400,7 +400,7 @@ export const AttendIdentityPage: React.FC = () => {
                     autoCapitalize="characters"
                     autoCorrect="off"
                     spellCheck="false"
-                    className="w-full bg-slate-50 border-2 border-slate-200 focus:border-[#1E40AF] focus:bg-white text-slate-900 font-mono text-sm uppercase rounded-2xl px-4 py-3.5 outline-none transition-all placeholder:text-slate-400 placeholder:normal-case font-bold"
+                    className="w-full bg-slate-50 border-2 border-slate-200 focus:border-[#1E40AF] focus:bg-white text-slate-900 font-mono text-base sm:text-sm uppercase rounded-xl sm:rounded-2xl px-3.5 sm:px-4 py-3 sm:py-3.5 outline-none transition-all placeholder:text-slate-400 placeholder:normal-case font-bold placeholder:text-xs min-[360px]:placeholder:text-sm"
                   />
                   {loading && (
                     <div className="absolute right-3.5 top-3.5 text-[#1E40AF]">
@@ -418,7 +418,7 @@ export const AttendIdentityPage: React.FC = () => {
                 type="button"
                 onClick={() => performLookup(matricInput)}
                 disabled={loading || matricInput.length < 5 || Boolean(rateLimitedUntil)}
-                className="w-full flex items-center justify-center gap-2 bg-[#1E40AF] hover:bg-blue-800 active:bg-blue-900 disabled:bg-slate-200 disabled:text-slate-400 text-white font-semibold text-xs py-3.5 px-4 rounded-xl shadow-xs transition-all active:scale-[0.99]"
+                className="w-full min-h-[44px] flex items-center justify-center gap-2 bg-[#1E40AF] hover:bg-blue-800 active:bg-blue-900 disabled:bg-slate-200 disabled:text-slate-400 text-white font-semibold text-xs py-3.5 px-4 rounded-xl shadow-xs transition-all active:scale-[0.99]"
               >
                 {loading ? (
                   <>
@@ -437,36 +437,36 @@ export const AttendIdentityPage: React.FC = () => {
 
           {/* Student Confirmation Card (Shown once matric is resolved) */}
           {foundStudent && (
-            <div className="space-y-4">
-              <div className="bg-blue-50/70 border border-blue-200/80 rounded-2xl p-4 text-left relative overflow-hidden">
+            <div className="space-y-3 sm:space-y-4">
+              <div className="bg-blue-50/70 border border-blue-200/80 rounded-2xl p-3.5 sm:p-4 text-left relative overflow-hidden">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[10px] uppercase font-bold tracking-wider text-[#1E40AF] bg-blue-100/80 px-2 py-0.5 rounded-md">
                     Enrolled Student
                   </span>
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
                 </div>
 
-                <div className="text-sm font-extrabold text-slate-900 leading-tight">
+                <div className="text-sm font-extrabold text-slate-900 leading-tight break-words">
                   {foundStudent.surname}, {foundStudent.first_name}
                 </div>
-                <div className="text-xs font-mono font-bold text-[#1E40AF] mt-0.5">
+                <div className="text-xs font-mono font-bold text-[#1E40AF] mt-0.5 break-all">
                   {foundStudent.matric_no}
                 </div>
 
                 <div className="grid grid-cols-2 gap-2 mt-3 pt-2.5 border-t border-blue-200/60 text-xs">
-                  <div>
+                  <div className="min-w-0">
                     <span className="text-[10px] uppercase font-semibold text-slate-400 block">
                       Program
                     </span>
-                    <span className="font-bold text-slate-700 text-[11px]">
+                    <span className="font-bold text-slate-700 text-[11px] leading-tight block break-words">
                       {foundStudent.program}
                     </span>
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <span className="text-[10px] uppercase font-semibold text-slate-400 block">
                       Level
                     </span>
-                    <span className="font-bold text-slate-700 text-[11px]">
+                    <span className="font-bold text-slate-700 text-[11px] leading-tight block">
                       {foundStudent.level} Level
                     </span>
                   </div>
@@ -477,7 +477,7 @@ export const AttendIdentityPage: React.FC = () => {
                   <div className="mt-3 pt-2 border-t border-blue-200/60 flex items-center gap-1.5 text-[11px]">
                     {bindingHint.hasBinding && bindingHint.isMatch ? (
                       <span className="text-emerald-700 font-semibold flex items-center gap-1">
-                        <Smartphone className="w-3 h-3 text-emerald-600" /> This device remembers you
+                        <Smartphone className="w-3 h-3 text-emerald-600 shrink-0" /> This device remembers you
                       </span>
                     ) : bindingHint.hasBinding && !bindingHint.isMatch ? (
                       <span className="text-amber-800 font-medium leading-tight">
@@ -494,7 +494,7 @@ export const AttendIdentityPage: React.FC = () => {
                   type="button"
                   onClick={handleContinue}
                   disabled={bindingInProgress}
-                  className="w-full flex items-center justify-center gap-2 bg-[#1E40AF] hover:bg-blue-800 active:bg-blue-900 disabled:bg-slate-300 text-white font-semibold text-xs py-3.5 px-4 rounded-xl shadow-xs transition-all active:scale-[0.99]"
+                  className="w-full min-h-[44px] flex items-center justify-center gap-2 bg-[#1E40AF] hover:bg-blue-800 active:bg-blue-900 disabled:bg-slate-300 text-white font-semibold text-xs py-3.5 px-4 rounded-xl shadow-xs transition-all active:scale-[0.99]"
                 >
                   {bindingInProgress ? (
                     <>
@@ -513,7 +513,7 @@ export const AttendIdentityPage: React.FC = () => {
                   type="button"
                   onClick={handleEdit}
                   disabled={bindingInProgress}
-                  className="w-full flex items-center justify-center gap-1.5 bg-white hover:bg-slate-50 text-slate-600 font-semibold text-xs py-2.5 px-4 rounded-xl border border-slate-200 transition-colors"
+                  className="w-full min-h-[40px] flex items-center justify-center gap-1.5 bg-white hover:bg-slate-50 text-slate-600 font-semibold text-xs py-2.5 px-4 rounded-xl border border-slate-200 transition-colors"
                 >
                   <Edit3 className="w-3.5 h-3.5" />
                   <span>Not you? Edit matric number</span>
