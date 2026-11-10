@@ -13,6 +13,7 @@ export interface ValidateSessionTokenResponse {
   expires_at: string;
   step: string;
   student_id: string | null;
+  location_enabled?: boolean;
 }
 
 export interface LookupMatricResponse {

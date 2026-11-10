@@ -156,26 +156,33 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
       return;
     }
 
-    // Classroom coordinates validation (Mandatory — no fallback location)
-    if (sessionLat === '' || sessionLng === '' || isNaN(Number(sessionLat)) || isNaN(Number(sessionLng))) {
-      setFormError(
-        'Classroom Location coordinates are required. Please tap "Capture My Current Location" or enter Latitude and Longitude.'
-      );
-      return;
-    }
-    const numLat = Number(sessionLat);
-    const numLng = Number(sessionLng);
-    if (numLat < -90 || numLat > 90) {
-      setFormError('Classroom Latitude must be between -90 and 90 degrees.');
-      return;
-    }
-    if (numLng < -180 || numLng > 180) {
-      setFormError('Classroom Longitude must be between -180 and 180 degrees.');
-      return;
-    }
-    if (radiusM < 10 || radiusM > 500) {
-      setFormError('Classroom radius must be between 10 and 500 meters.');
-      return;
+    // Classroom coordinates validation (Mandatory only if geofence is enabled)
+    let numLat: number | null = null;
+    let numLng: number | null = null;
+    let validRadius: number | null = null;
+
+    if (useGeofence) {
+      if (sessionLat === '' || sessionLng === '' || isNaN(Number(sessionLat)) || isNaN(Number(sessionLng))) {
+        setFormError(
+          'Classroom Location coordinates are required when Geofence is enabled. Please tap "Capture My Current Location" or enter Latitude and Longitude.'
+        );
+        return;
+      }
+      numLat = Number(sessionLat);
+      numLng = Number(sessionLng);
+      if (numLat < -90 || numLat > 90) {
+        setFormError('Classroom Latitude must be between -90 and 90 degrees.');
+        return;
+      }
+      if (numLng < -180 || numLng > 180) {
+        setFormError('Classroom Longitude must be between -180 and 180 degrees.');
+        return;
+      }
+      if (radiusM < 10 || radiusM > 500) {
+        setFormError('Classroom radius must be between 10 and 500 meters.');
+        return;
+      }
+      validRadius = radiusM;
     }
 
     // Parse startsAt explicitly as Africa/Lagos (WAT, UTC+1)
@@ -191,8 +198,8 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
         grace_minutes: graceMinutes,
         latitude: numLat,
         longitude: numLng,
-        radius_m: radiusM,
-        location_name: locationName.trim() || 'Classroom Lecture Hall',
+        radius_m: validRadius || undefined,
+        location_name: useGeofence ? (locationName.trim() || 'Classroom Lecture Hall') : null,
       },
       { id: user.id, name: user.name }
     );

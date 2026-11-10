@@ -1,5 +1,6 @@
 import React from 'react';
 import { Check } from 'lucide-react';
+import { getAttemptState } from '../lib/attemptState';
 
 export type StepKey = 'identity' | 'location' | 'selfie' | 'submit';
 
@@ -8,29 +9,25 @@ interface StepperProps {
 }
 
 export const Stepper: React.FC<StepperProps> = ({ currentStep }) => {
-  const steps: { key: StepKey; label: string; num: number }[] = [
-    { key: 'identity', label: 'Details', num: 1 },
-    { key: 'location', label: 'Location', num: 2 },
-    { key: 'selfie', label: 'Selfie', num: 3 },
-    { key: 'submit', label: 'Submit', num: 4 },
-  ];
+  const attempt = getAttemptState();
+  const locationEnabled = attempt?.session?.location_enabled !== false;
 
-  const getStepIndex = (key: StepKey) => {
-    switch (key) {
-      case 'identity':
-        return 0;
-      case 'location':
-        return 1;
-      case 'selfie':
-        return 2;
-      case 'submit':
-        return 3;
-      default:
-        return 0;
-    }
-  };
+  const rawSteps: { key: StepKey; label: string }[] = locationEnabled
+    ? [
+        { key: 'identity', label: 'Details' },
+        { key: 'location', label: 'Location' },
+        { key: 'selfie', label: 'Selfie' },
+        { key: 'submit', label: 'Submit' },
+      ]
+    : [
+        { key: 'identity', label: 'Details' },
+        { key: 'selfie', label: 'Selfie' },
+        { key: 'submit', label: 'Submit' },
+      ];
 
-  const currentIndex = getStepIndex(currentStep);
+  const steps = rawSteps.map((s, i) => ({ ...s, num: i + 1 }));
+
+  const currentIndex = steps.findIndex(s => s.key === currentStep);
 
   return (
     <div className="w-full flex items-center justify-between px-0.5 sm:px-1 py-2 sm:py-3 mb-2 sm:mb-3 overflow-hidden">

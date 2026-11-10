@@ -105,15 +105,35 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // Step Guard: Ensure location verification passed before accepting selfie upload
-    if (attempt.latitude == null || attempt.longitude == null || (attempt.step !== 'selfie' && attempt.step !== 'video')) {
-      return new Response(JSON.stringify({
-        error: 'LOCATION_REQUIRED',
-        message: 'Student location must be verified before uploading selfie proof.',
-      }), {
-        status: 403,
-        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
-      });
+    // Step Guard: Look up lecture session to verify whether location is required
+    const { data: sessionData } = await supabase
+      .from('lecture_sessions')
+      .select('latitude, longitude')
+      .eq('id', attempt.session_id)
+      .maybeSingle();
+
+    const isLocationRequired = Boolean(sessionData?.latitude != null && sessionData?.longitude != null);
+
+    if (isLocationRequired) {
+      if (attempt.latitude == null || attempt.longitude == null || (attempt.step !== 'selfie' && attempt.step !== 'video')) {
+        return new Response(JSON.stringify({
+          error: 'LOCATION_REQUIRED',
+          message: 'Student location must be verified before uploading selfie proof.',
+        }), {
+          status: 403,
+          headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    } else {
+      if (attempt.step !== 'identity' && attempt.step !== 'selfie' && attempt.step !== 'video') {
+        return new Response(JSON.stringify({
+          error: 'INVALID_STEP',
+          message: 'Student identity must be verified before uploading selfie proof.',
+        }), {
+          status: 403,
+          headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+        });
+      }
     }
 
     // 2. Compute canonical storage path (attendance/<session_id>/<student_id>/<attempt_id>.jpg)

@@ -579,44 +579,50 @@ export class LecturerService {
       const now = new Date();
       const status: SessionStatus = startsAtDate.getTime() > now.getTime() ? 'scheduled' : 'active';
 
-      // 3. Geofence coordinate & radius validation (Classroom location is mandatory — no fallback location)
+      // 3. Geofence coordinate & radius validation (Only enforced if coordinates are provided)
       const hasLat = data.latitude !== undefined && data.latitude !== null && (data.latitude as any) !== '';
       const hasLng = data.longitude !== undefined && data.longitude !== null && (data.longitude as any) !== '';
 
-      if (!hasLat || !hasLng) {
-        return {
-          success: false,
-          error: 'Classroom latitude and longitude are required. Please capture your current location or enter coordinates manually.',
-        };
-      }
+      let validLat: number | null = null;
+      let validLng: number | null = null;
+      let validRadius: number | null = null;
 
-      const validLat = Number(data.latitude);
-      const validLng = Number(data.longitude);
-      let validRadius = 50.0;
-
-      if (isNaN(validLat) || validLat < -90 || validLat > 90) {
-        return {
-          success: false,
-          error: 'Classroom latitude must be a valid number between -90 and 90 degrees.',
-        };
-      }
-
-      if (isNaN(validLng) || validLng < -180 || validLng > 180) {
-        return {
-          success: false,
-          error: 'Classroom longitude must be a valid number between -180 and 180 degrees.',
-        };
-      }
-
-      if (data.radius_m !== undefined && data.radius_m !== null) {
-        const r = Number(data.radius_m);
-        if (isNaN(r) || r < 10 || r > 500) {
+      if (hasLat || hasLng) {
+        if (!hasLat || !hasLng) {
           return {
             success: false,
-            error: 'Classroom geofence radius must be between 10 and 500 meters.',
+            error: 'Both classroom latitude and longitude are required when geofencing is enabled.',
           };
         }
-        validRadius = r;
+
+        validLat = Number(data.latitude);
+        validLng = Number(data.longitude);
+        validRadius = 50.0;
+
+        if (isNaN(validLat) || validLat < -90 || validLat > 90) {
+          return {
+            success: false,
+            error: 'Classroom latitude must be a valid number between -90 and 90 degrees.',
+          };
+        }
+
+        if (isNaN(validLng) || validLng < -180 || validLng > 180) {
+          return {
+            success: false,
+            error: 'Classroom longitude must be a valid number between -180 and 180 degrees.',
+          };
+        }
+
+        if (data.radius_m !== undefined && data.radius_m !== null) {
+          const r = Number(data.radius_m);
+          if (isNaN(r) || r < 10 || r > 500) {
+            return {
+              success: false,
+              error: 'Classroom geofence radius must be between 10 and 500 meters.',
+            };
+          }
+          validRadius = r;
+        }
       }
 
       // High entropy raw token (pre-image) and token hash
@@ -636,7 +642,7 @@ export class LecturerService {
           created_by: actor.id,
           latitude: validLat,
           longitude: validLng,
-          radius_m: validRadius,
+          radius_m: validRadius ?? 50.0,
           location_name: validLat !== null && data.location_name ? data.location_name.trim() : null,
         })
         .select()

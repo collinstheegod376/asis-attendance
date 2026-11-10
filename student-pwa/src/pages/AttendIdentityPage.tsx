@@ -268,8 +268,12 @@ export const AttendIdentityPage: React.FC = () => {
         updateAttemptStudent(foundStudent);
         updateAttemptFingerprint(activeFpHash, isPrivate);
 
-        // Advance to location check
-        navigate('/attend/location', { replace: false });
+        // Advance to location check if enabled, or straight to selfie if disabled by lecturer
+        if (currentAttempt?.session?.location_enabled !== false) {
+          navigate('/attend/location', { replace: false });
+        } else {
+          navigate('/attend/selfie', { replace: false });
+        }
         return;
       }
 
@@ -503,7 +507,11 @@ export const AttendIdentityPage: React.FC = () => {
                     </>
                   ) : (
                     <>
-                      <span>Continue to Location Check</span>
+                      <span>
+                        {attempt?.session?.location_enabled !== false
+                          ? 'Continue to Location Check'
+                          : 'Continue to Selfie Capture'}
+                      </span>
                       <ArrowRight className="w-4 h-4" />
                     </>
                   )}

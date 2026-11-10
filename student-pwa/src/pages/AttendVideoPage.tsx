@@ -28,7 +28,7 @@ export const AttendVideoPage: React.FC = () => {
       return;
     }
 
-    if (!attempt.location) {
+    if (attempt.session?.location_enabled !== false && !attempt.location) {
       navigate('/attend/location', { replace: true });
       return;
     }

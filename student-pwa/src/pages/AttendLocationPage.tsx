@@ -31,11 +31,26 @@ export const AttendLocationPage: React.FC = () => {
       return;
     }
 
+    if (attempt.session?.location_enabled === false) {
+      navigate('/attend/selfie', { replace: true });
+      return;
+    }
+
     requestLocation();
   }, []);
 
   const requestLocation = async () => {
+    // If lecturer has not enabled location verification, skip GPS and go straight to selfie capture
+    if (attempt?.session?.location_enabled === false) {
+      navigate('/attend/selfie', { replace: true });
+      return;
+    }
     setLoading(true);
+    setErrorStatus(null);
+    setVerifiedSuccess(false);
+    setBoundaryStatus(null);
+    setLiveAccuracy(null);
+    setGpsProgressStep('Waking up satellite receiver...');
     setErrorStatus(null);
     setVerifiedSuccess(false);
     setBoundaryStatus(null);
@@ -129,49 +144,6 @@ export const AttendLocationPage: React.FC = () => {
       setVerifiedSuccess(false);
 
       if (err instanceof ApiError) {
-          // Existing handling for API errors
-          if (err.code === 'ATTEMPT_EXPIRED' || err.status === 410) {
-            clearAttemptState();
-            navigate('/expired', { replace: true });
-            return;
-          }
-          if (err.code === 'LOW_ACCURACY') {
-            setErrorStatus(`GPS accuracy is too coarse. Move to open sky and retry.`);
-            setLoading(false);
-            return;
-          }
-          if (err.code === 'OUTSIDE_CLASSROOM_BOUNDARY') {
-            const distText = err.data?.distance_m !== undefined ? ` Detected distance: ${err.data.distance_m}m.` : '';
-            setErrorStatus(`You are outside the classroom boundary. You must be within 50m of the lecturer to sign attendance.${distText}`);
-            setLoading(false);
-            return;
-          }
-          if (err.code === 'NO_CLASSROOM_LOCATION') {
-            setErrorStatus('This lecture session does not have a classroom location configured. Please notify your lecturer.');
-            setLoading(false);
-            return;
-          }
-          if (err.code === 'SESSION_CLOSED' || err.status === 403) {
-            clearAttemptState();
-            navigate('/closed', { replace: true });
-            return;
-          }
-          setErrorStatus(err.message || 'Location verification failed.');
-        } else if (err?.code === 1) {
-          // Permission denied – fall back to selfie capture
-          navigate('/attend/selfie');
-          return;
-        } else if (err?.code === 2) {
-          // Position unavailable – fall back to selfie capture
-          navigate('/attend/selfie');
-          return;
-        } else if (err?.code === 3) {
-          setErrorStatus('GPS satellite lock timed out. Please tap retry.');
-          setLoading(false);
-          return;
-        } else {
-          setErrorStatus(err?.message || 'Could not verify GPS position. Tap retry.');
-        }
         if (err.code === 'ATTEMPT_EXPIRED' || err.status === 410) {
           clearAttemptState();
           navigate('/expired', { replace: true });
@@ -189,8 +161,8 @@ export const AttendLocationPage: React.FC = () => {
           return;
         }
         if (err.code === 'NO_CLASSROOM_LOCATION') {
-          setErrorStatus('This lecture session does not have a classroom location configured. Please notify your lecturer.');
-          setLoading(false);
+          // Lecturer did not configure location: navigate to selfie
+          navigate('/attend/selfie', { replace: true });
           return;
         }
         if (err.code === 'SESSION_CLOSED' || err.status === 403) {
@@ -202,7 +174,7 @@ export const AttendLocationPage: React.FC = () => {
       } else if (err?.code === 1) {
         setErrorStatus('Location permission was denied. Please allow location access in your browser or phone settings.');
       } else if (err?.code === 2) {
-        setErrorStatus('GPS position unavailable. Ensure your device location / GPS is turned on.');
+        setErrorStatus('GPS accuracy is too coarse. Move to open sky and retry.');
       } else if (err?.code === 3) {
         setErrorStatus('GPS satellite lock timed out. Please tap retry.');
       } else {

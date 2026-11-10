@@ -11,6 +11,7 @@ export interface SessionData {
   starts_at: string;
   expires_at: string;
   grace_minutes: number;
+  location_enabled?: boolean;
 }
 
 export interface StudentData {

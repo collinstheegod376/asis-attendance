@@ -97,6 +97,7 @@ export const JoinTokenPage: React.FC = () => {
             starts_at: new Date().toISOString(),
             expires_at: response.expires_at,
             grace_minutes: 15,
+            location_enabled: response.location_enabled,
           },
           existingAttempt?.idempotency_key
         );
