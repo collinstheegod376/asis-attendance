@@ -17,6 +17,7 @@ import {
   RefreshCw,
   PowerOff,
   Sparkles,
+  MapPin,
 } from 'lucide-react';
 import { LecturerService } from '../../services/lecturerService';
 import { LectureSession, AttendanceRecord } from '../../types';
@@ -431,6 +432,17 @@ export const ClassroomProjectorView: React.FC = () => {
               <h3 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight leading-tight">
                 {session.title}
               </h3>
+              {session.latitude && session.longitude ? (
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold mt-2">
+                  <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Classroom Geofence: {session.location_name || 'Classroom'} (&plusmn;{session.radius_m || 50}m)</span>
+                </div>
+              ) : (
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200 text-xs font-semibold mt-2">
+                  <MapPin className="w-3.5 h-3.5 text-slate-500" />
+                  <span>Campus Boundary Geofence</span>
+                </div>
+              )}
             </div>
 
             {/* High-Contrast Static QR Code (Rendered only on token change) */}

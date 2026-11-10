@@ -165,11 +165,12 @@ Deno.serve(async (req: Request) => {
 
     if (rpcErr || !result) {
       console.error('RPC Error in rpc_submit_attendance:', rpcErr);
+      const isGeofenceUnconfigured = rpcErr?.message?.includes('GEOFENCE_NOT_CONFIGURED');
       return new Response(JSON.stringify({
-        error: 'DATABASE_ERROR',
+        error: isGeofenceUnconfigured ? 'GEOFENCE_NOT_CONFIGURED' : 'DATABASE_ERROR',
         message: rpcErr?.message || 'Database error occurred during submission.',
       }), {
-        status: 500,
+        status: isGeofenceUnconfigured ? 400 : 500,
         headers: { ...baseHeaders, 'Content-Type': 'application/json' },
       });
     }
@@ -192,7 +193,7 @@ Deno.serve(async (req: Request) => {
       const status =
         errCode === 'PROXY_DETECTED' || result.reference_code === 'BIND-203'
           ? 403
-          : errCode === 'DEVICE_CHECK_FAILED'
+          : errCode === 'DEVICE_CHECK_FAILED' || errCode === 'OUTSIDE_CLASSROOM_BOUNDARY' || errCode === 'OUTSIDE_CAMPUS_BOUNDARY'
           ? 403
           : errCode === 'ATTEMPT_EXPIRED' || errCode === 'SESSION_EXPIRED'
           ? 410
@@ -204,6 +205,8 @@ Deno.serve(async (req: Request) => {
         reason: result.reason,
         action: result.action,
         reference_code: result.reference_code,
+        ...(result.distance_m !== undefined ? { distance_m: result.distance_m } : {}),
+        ...(result.allowed_radius_m !== undefined ? { allowed_radius_m: result.allowed_radius_m } : {}),
       }), {
         status,
         headers: { ...baseHeaders, 'Content-Type': 'application/json' },

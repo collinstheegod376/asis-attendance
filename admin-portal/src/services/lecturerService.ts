@@ -402,6 +402,10 @@ export class LecturerService {
           created_at: s.created_at,
           closed_at: s.closed_at,
           attendance_count: countMap.get(s.id) || 0,
+          latitude: s.latitude,
+          longitude: s.longitude,
+          radius_m: s.radius_m,
+          location_name: s.location_name,
         };
       });
     } catch (e) {
@@ -459,6 +463,10 @@ export class LecturerService {
         created_at: s.created_at,
         closed_at: s.closed_at,
         attendance_count: countMap.get(s.id) || 0,
+        latitude: s.latitude,
+        longitude: s.longitude,
+        radius_m: s.radius_m,
+        location_name: s.location_name,
       }));
     } catch (e) {
       console.error('getLecturerRecentSessions exception:', e);
@@ -502,6 +510,10 @@ export class LecturerService {
         created_by: s.created_by,
         created_at: s.created_at,
         closed_at: s.closed_at,
+        latitude: s.latitude,
+        longitude: s.longitude,
+        radius_m: s.radius_m,
+        location_name: s.location_name,
       };
     } catch (e) {
       console.error('getSessionById exception:', e);
@@ -516,6 +528,10 @@ export class LecturerService {
       starts_at: string;
       duration_minutes: number;
       grace_minutes?: number;
+      latitude?: number | null;
+      longitude?: number | null;
+      radius_m?: number;
+      location_name?: string | null;
     },
     actor: { id: string; name: string }
   ): Promise<{ success: boolean; error?: string; session?: LectureSession; rawToken?: string }> {
@@ -578,6 +594,10 @@ export class LecturerService {
           grace_minutes: graceMinutes,
           status,
           created_by: actor.id,
+          latitude: data.latitude !== undefined ? data.latitude : null,
+          longitude: data.longitude !== undefined ? data.longitude : null,
+          radius_m: data.radius_m ?? 50.0,
+          location_name: data.location_name ?? null,
         })
         .select()
         .single();
@@ -623,6 +643,10 @@ export class LecturerService {
         created_at: inserted.created_at,
         closed_at: inserted.closed_at,
         attendance_count: 0,
+        latitude: inserted.latitude,
+        longitude: inserted.longitude,
+        radius_m: inserted.radius_m,
+        location_name: inserted.location_name,
       };
 
       return {

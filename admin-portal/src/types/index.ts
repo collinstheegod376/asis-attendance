@@ -96,6 +96,10 @@ export interface LectureSession {
   created_at: string;
   closed_at?: string | null;
   attendance_count?: number;
+  latitude?: number | null;
+  longitude?: number | null;
+  radius_m?: number;
+  location_name?: string | null;
 }
 
 export interface AttendanceRecord {

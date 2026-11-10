@@ -34,6 +34,8 @@ export interface VerifyLocationResponse {
   inside_boundary: boolean;
   error?: string;
   message?: string;
+  distance_m?: number;
+  allowed_radius_m?: number;
 }
 
 export interface UploadSelfieResponse {

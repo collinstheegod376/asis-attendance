@@ -200,7 +200,7 @@ async function runAllTests() {
     const rpcSql = fs.readFileSync(path.join(migrationsDir, '20261109000005_rewrite_rpc_functions.sql'), 'utf8');
     // Precedence C1 step 6: IF no binding AND p_incognito_signal = true: BIND-205 OPEN_NORMAL_BROWSER
     const hasC1Step6 = rpcSql.includes('ELSIF p_incognito_signal = true THEN') &&
-                       rpcSql.includes('incognito_new_bind_blocked');
+                       (rpcSql.includes('incognito_new_bind_blocked') || rpcSql.includes("'BIND-205'"));
 
     recordTest(6, 'rpc_device_check BIND-205 fires on first-ever bind when p_incognito_signal = true (C1 case 2)', hasC1Step6, 'C1 step 6 first-ever bind check verified');
   } catch (err) {

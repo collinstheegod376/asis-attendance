@@ -72,7 +72,7 @@ Deno.serve(async (req: Request) => {
         error: isGeofenceUnconfigured ? 'GEOFENCE_NOT_CONFIGURED' : 'DATABASE_ERROR',
         message: rpcErr?.message || 'Database error occurred during location verification.',
       }), {
-        status: isGeofenceUnconfigured ? 500 : 500,
+        status: isGeofenceUnconfigured ? 400 : 500,
         headers: { ...baseHeaders, 'Content-Type': 'application/json' },
       });
     }
@@ -80,16 +80,20 @@ Deno.serve(async (req: Request) => {
     if (!result.success) {
       const errCode = (result.error as string) || 'LOCATION_VERIFICATION_FAILED';
       const status =
-        errCode === 'OUTSIDE_CAMPUS_BOUNDARY' || errCode === 'LOW_ACCURACY'
+        errCode === 'OUTSIDE_CAMPUS_BOUNDARY' || errCode === 'OUTSIDE_CLASSROOM_BOUNDARY' || errCode === 'LOW_ACCURACY'
           ? 403
           : errCode === 'ATTEMPT_EXPIRED'
           ? 410
+          : errCode === 'GEOFENCE_NOT_CONFIGURED'
+          ? 400
           : 400;
 
       return new Response(JSON.stringify({
         success: false,
         error: errCode,
         message: result.message,
+        ...(result.distance_m !== undefined ? { distance_m: result.distance_m } : {}),
+        ...(result.allowed_radius_m !== undefined ? { allowed_radius_m: result.allowed_radius_m } : {}),
       }), {
         status,
         headers: { ...baseHeaders, 'Content-Type': 'application/json' },

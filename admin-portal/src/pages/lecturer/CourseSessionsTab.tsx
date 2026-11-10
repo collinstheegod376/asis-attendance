@@ -14,6 +14,7 @@ import {
   Play,
   Ban,
   AlertTriangle,
+  MapPin,
 } from 'lucide-react';
 import { LecturerService } from '../../services/lecturerService';
 import { Course, LectureSession } from '../../types';
@@ -49,6 +50,57 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
   const [formError, setFormError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [newSessionCreated, setNewSessionCreated] = useState<LectureSession | null>(null);
+
+  // Classroom Geofence state
+  const [useGeofence, setUseGeofence] = useState(false);
+  const [locationName, setLocationName] = useState('');
+  const [sessionLat, setSessionLat] = useState<number | ''>('');
+  const [sessionLng, setSessionLng] = useState<number | ''>('');
+  const [radiusM, setRadiusM] = useState<number>(50);
+  const [locationAccuracy, setLocationAccuracy] = useState<number | null>(null);
+  const [detectingLocation, setDetectingLocation] = useState(false);
+
+  const handleCaptureLocation = async () => {
+    if (!navigator.geolocation) {
+      alert('Geolocation is not supported by your browser.');
+      return;
+    }
+    setDetectingLocation(true);
+    try {
+      const readings: GeolocationPosition[] = [];
+      // Sample 3 readings to obtain the most accurate GPS fix
+      for (let i = 0; i < 3; i++) {
+        try {
+          const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, {
+              enableHighAccuracy: true,
+              timeout: 10000,
+              maximumAge: 0,
+            });
+          });
+          readings.push(pos);
+          if (pos.coords.accuracy <= 5) break; // High accuracy fix obtained early
+          await new Promise(r => setTimeout(r, 300));
+        } catch (err) {
+          if (readings.length === 0) throw err;
+          break;
+        }
+      }
+
+      readings.sort((a, b) => a.coords.accuracy - b.coords.accuracy);
+      const best = readings[0];
+      setSessionLat(parseFloat(best.coords.latitude.toFixed(6)));
+      setSessionLng(parseFloat(best.coords.longitude.toFixed(6)));
+      setLocationAccuracy(Math.round(best.coords.accuracy * 10) / 10);
+      setRadiusM(50);
+      if (!locationName) setLocationName('Classroom Lecture Hall');
+      setUseGeofence(true);
+    } catch (err: any) {
+      alert('Could not capture location: ' + (err?.message || 'GPS fix timed out'));
+    } finally {
+      setDetectingLocation(false);
+    }
+  };
 
   const [maxDuration, setMaxDuration] = useState(180);
 
@@ -112,6 +164,10 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
         starts_at: isoStartsAt,
         duration_minutes: durationMinutes,
         grace_minutes: graceMinutes,
+        latitude: useGeofence && typeof sessionLat === 'number' ? sessionLat : null,
+        longitude: useGeofence && typeof sessionLng === 'number' ? sessionLng : null,
+        radius_m: useGeofence ? radiusM : 50,
+        location_name: useGeofence ? locationName.trim() : null,
       },
       { id: user.id, name: user.name }
     );
@@ -319,6 +375,22 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                       {session.attendance_count || 0} students recorded
                     </span>
                   </div>
+
+                  <div className="flex items-center justify-between pt-1 border-t border-slate-200/60">
+                    <span className="flex items-center gap-1.5 text-slate-500">
+                      <MapPin className="w-3.5 h-3.5 text-blue-600" />
+                      Classroom Geofence:
+                    </span>
+                    {session.latitude && session.longitude ? (
+                      <span className="font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200 text-[11px]">
+                        {session.location_name || 'Classroom'} (&plusmn;{session.radius_m || 50}m)
+                      </span>
+                    ) : (
+                      <span className="text-slate-500 text-[11px]">
+                        Campus Boundary (Fallback)
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 {/* Actions per state (Fix QA-17) */}
@@ -496,6 +568,120 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                         Signed after this: marked Late
                       </span>
                     </div>
+                  </div>
+
+                  {/* Classroom Location Geofence Section */}
+                  <div className="p-4 rounded-2xl bg-blue-50/70 border border-blue-200/80 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <MapPin className="w-4 h-4 text-blue-700 shrink-0" />
+                        <div>
+                          <span className="text-xs font-bold text-slate-900 block">Classroom Location Geofence</span>
+                          <span className="text-[11px] text-slate-500 block">Enforce 50m classroom boundary for student check-in</span>
+                        </div>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={useGeofence}
+                          onChange={e => setUseGeofence(e.target.checked)}
+                          className="sr-only peer"
+                        />
+                        <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                      </label>
+                    </div>
+
+                    {useGeofence && (
+                      <div className="space-y-3 pt-2 border-t border-blue-100">
+                        {/* Capture Location Button & Accuracy Badge */}
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={handleCaptureLocation}
+                            disabled={detectingLocation}
+                            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold shadow-xs transition active:scale-95 disabled:opacity-50 cursor-pointer"
+                          >
+                            <MapPin className="w-3.5 h-3.5" />
+                            <span>{detectingLocation ? 'Sampling 3 GPS Readings...' : 'Capture My Current Location'}</span>
+                          </button>
+
+                          {sessionLat !== '' && sessionLng !== '' && (
+                            <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                              <span>
+                                Lat: {sessionLat}, Lng: {sessionLng}
+                                {locationAccuracy !== null ? ` (±${locationAccuracy}m accuracy)` : ''}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Optional Classroom / Hall Name */}
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                            Classroom / Hall Name (Optional)
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="e.g. Science Complex Lecture Theatre 2"
+                            value={locationName}
+                            onChange={e => setLocationName(e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+                          />
+                        </div>
+
+                        {/* Radius Selector & Manual PC Coordinates */}
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                          <div>
+                            <label className="block text-[10px] font-bold uppercase text-slate-600 mb-1">
+                              Radius Selector
+                            </label>
+                            <select
+                              value={radiusM}
+                              onChange={e => setRadiusM(parseInt(e.target.value, 10) || 50)}
+                              className="w-full px-2.5 py-2 rounded-xl border border-slate-300 text-xs bg-white font-medium focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+                            >
+                              <option value={30}>30 meters (Tight Room)</option>
+                              <option value={50}>50 meters (Default Classroom)</option>
+                              <option value={75}>75 meters (Auditorium)</option>
+                              <option value={100}>100 meters (Amphitheater)</option>
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="block text-[10px] font-bold uppercase text-slate-600 mb-1">
+                              Latitude (Manual)
+                            </label>
+                            <input
+                              type="number"
+                              step="any"
+                              placeholder="e.g. 6.111800"
+                              value={sessionLat}
+                              onChange={e => setSessionLat(e.target.value === '' ? '' : parseFloat(e.target.value))}
+                              className="w-full px-2.5 py-2 rounded-xl border border-slate-300 text-xs bg-white font-mono focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-[10px] font-bold uppercase text-slate-600 mb-1">
+                              Longitude (Manual)
+                            </label>
+                            <input
+                              type="number"
+                              step="any"
+                              placeholder="e.g. 6.601100"
+                              value={sessionLng}
+                              onChange={e => setSessionLng(e.target.value === '' ? '' : parseFloat(e.target.value))}
+                              className="w-full px-2.5 py-2 rounded-xl border border-slate-300 text-xs bg-white font-mono focus:outline-hidden focus:ring-2 focus:ring-blue-600"
+                            />
+                          </div>
+                        </div>
+
+                        <p className="text-[10px] text-slate-500 italic">
+                          If creating a session on a desktop PC without GPS, enter the classroom coordinates manually above.
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex items-center justify-end gap-3 pt-3">

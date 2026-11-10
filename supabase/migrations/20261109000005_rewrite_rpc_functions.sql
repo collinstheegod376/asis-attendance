@@ -48,7 +48,7 @@ DECLARE
     v_cookie_valid BOOLEAN := false;
     v_device_match BOOLEAN := false;
 BEGIN
-    -- 1. PERFORM pg_advisory_xact_lock(hashtextextended(p_fingerprint_hash, 0));
+    -- 1. Advisory transaction lock on physical fingerprint (Fixes SEC-11)
     PERFORM pg_advisory_xact_lock(hashtextextended(p_fingerprint_hash, 0));
 
     -- 2. Lookup active binding for p_student_id
@@ -57,7 +57,7 @@ BEGIN
     WHERE student_id = p_student_id AND status = 'active'
     FOR UPDATE;
 
-    -- 3. IF binding exists AND binding.fingerprint_hash = p_fingerprint_hash:
+    -- 3. Binding exists AND binding.fingerprint_hash matches:
     IF v_binding.id IS NOT NULL AND v_binding.fingerprint_hash = p_fingerprint_hash THEN
         -- Evaluate cookie validity
         IF p_cookie_token_hash IS NOT NULL AND (v_binding.trusted_cookie_hash IS NULL OR v_binding.trusted_cookie_hash = p_cookie_token_hash) THEN
@@ -65,15 +65,18 @@ BEGIN
         END IF;
 
         -- Evaluate local device ID match
-        IF p_local_device_id IS NOT NULL AND v_binding.device_id IS NOT NULL AND v_binding.device_id = p_local_device_id THEN
+        IF p_local_device_id IS NOT NULL AND (v_binding.device_id IS NULL OR v_binding.device_id = p_local_device_id) THEN
             v_device_match := true;
         END IF;
 
         IF v_cookie_valid AND v_device_match THEN
-            -- Update binding timestamps
+            -- Update binding timestamps and backfill any missing identifiers
             UPDATE public.device_bindings
-            SET last_used_at = clock_timestamp(),
-                updated_at = clock_timestamp()
+            SET last_seen_at = clock_timestamp(),
+                updated_at = clock_timestamp(),
+                user_agent = COALESCE(p_user_agent, user_agent),
+                device_id = COALESCE(v_binding.device_id, p_local_device_id),
+                trusted_cookie_hash = COALESCE(v_binding.trusted_cookie_hash, p_cookie_token_hash)
             WHERE id = v_binding.id;
 
             -- If attempt provided, ensure fingerprint and device_bound are set (locks attempt per C2)
@@ -84,12 +87,13 @@ BEGIN
                 WHERE id = p_attempt_id;
             END IF;
 
-            -- Log verification success event
+            -- Log verification success event ('match')
             INSERT INTO public.device_events (
-                student_id, fingerprint_hash, device_id, event_type, reference_code, metadata
+                student_id, fingerprint_hash, device_id, event_type, reference_code, metadata, ip, user_agent
             ) VALUES (
-                p_student_id, p_fingerprint_hash, p_local_device_id, 'check_passed', 'BIND-200',
-                jsonb_build_object('user_agent', p_user_agent, 'ip', p_ip)
+                p_student_id, p_fingerprint_hash, p_local_device_id, 'match'::device_event_type, 'BIND-200',
+                jsonb_build_object('binding_id', v_binding.id, 'user_agent', p_user_agent, 'ip', p_ip),
+                p_ip, p_user_agent
             );
 
             RETURN jsonb_build_object(
@@ -101,10 +105,11 @@ BEGIN
         ELSIF p_incognito_signal = true THEN
             -- Known fingerprint but cookie missing and incognito signal present (C1 case 1)
             INSERT INTO public.device_events (
-                student_id, fingerprint_hash, device_id, event_type, reference_code, metadata
+                student_id, fingerprint_hash, device_id, event_type, reference_code, metadata, ip, user_agent
             ) VALUES (
-                p_student_id, p_fingerprint_hash, p_local_device_id, 'incognito_blocked', 'BIND-205',
-                jsonb_build_object('user_agent', p_user_agent, 'ip', p_ip, 'incognito_signal', true)
+                p_student_id, p_fingerprint_hash, p_local_device_id, 'cookie_missing'::device_event_type, 'BIND-205',
+                jsonb_build_object('user_agent', p_user_agent, 'ip', p_ip, 'incognito_signal', true),
+                p_ip, p_user_agent
             );
 
             RETURN jsonb_build_object(
@@ -113,12 +118,19 @@ BEGIN
                 'reference_code', 'BIND-205'
             );
         ELSE
-            -- Known fingerprint, cookie missing/invalid, incognito signal false
+            -- Known fingerprint, cookie missing/invalid or device_id mismatch, incognito signal false
             INSERT INTO public.device_events (
-                student_id, fingerprint_hash, device_id, event_type, reference_code, metadata
+                student_id, fingerprint_hash, device_id, event_type, reference_code, metadata, ip, user_agent
             ) VALUES (
-                p_student_id, p_fingerprint_hash, p_local_device_id, 'device_unrecognized', 'BIND-204',
-                jsonb_build_object('user_agent', p_user_agent, 'ip', p_ip, 'cookie_present', p_cookie_token_hash IS NOT NULL)
+                p_student_id, p_fingerprint_hash, p_local_device_id,
+                CASE 
+                    WHEN p_cookie_token_hash IS NOT NULL AND v_binding.trusted_cookie_hash IS NOT NULL AND p_cookie_token_hash <> v_binding.trusted_cookie_hash 
+                    THEN 'cookie_mismatch'::device_event_type 
+                    ELSE 'cookie_missing'::device_event_type 
+                END,
+                'BIND-204',
+                jsonb_build_object('user_agent', p_user_agent, 'ip', p_ip, 'cookie_present', p_cookie_token_hash IS NOT NULL, 'device_id_match', v_device_match),
+                p_ip, p_user_agent
             );
 
             RETURN jsonb_build_object(
@@ -128,13 +140,14 @@ BEGIN
             );
         END IF;
 
-    -- 4. IF binding exists AND fingerprint differs:
+    -- 4. Binding exists AND fingerprint differs:
     ELSIF v_binding.id IS NOT NULL AND v_binding.fingerprint_hash <> p_fingerprint_hash THEN
         INSERT INTO public.device_events (
-            student_id, fingerprint_hash, device_id, event_type, reference_code, metadata
+            student_id, fingerprint_hash, device_id, event_type, reference_code, metadata, ip, user_agent
         ) VALUES (
-            p_student_id, p_fingerprint_hash, p_local_device_id, 'mismatch_blocked', 'BIND-201',
-            jsonb_build_object('user_agent', p_user_agent, 'ip', p_ip, 'bound_fp', v_binding.fingerprint_hash)
+            p_student_id, p_fingerprint_hash, p_local_device_id, 'mismatch'::device_event_type, 'BIND-201',
+            jsonb_build_object('user_agent', p_user_agent, 'ip', p_ip, 'bound_fp', v_binding.fingerprint_hash, 'attempted_fp', p_fingerprint_hash),
+            p_ip, p_user_agent
         );
 
         RETURN jsonb_build_object(
@@ -143,8 +156,9 @@ BEGIN
             'reference_code', 'BIND-201'
         );
 
-    -- 5. IF no binding AND fingerprint already bound to another active student:
+    -- 5. No active binding for this student:
     ELSIF v_binding.id IS NULL THEN
+        -- Check if physical device is already bound to another active student
         SELECT * INTO v_other_binding
         FROM public.device_bindings
         WHERE fingerprint_hash = p_fingerprint_hash AND status = 'active' AND student_id <> p_student_id
@@ -152,10 +166,11 @@ BEGIN
 
         IF v_other_binding.id IS NOT NULL THEN
             INSERT INTO public.device_events (
-                student_id, fingerprint_hash, device_id, event_type, reference_code, metadata
+                student_id, fingerprint_hash, device_id, event_type, reference_code, metadata, ip, user_agent
             ) VALUES (
-                p_student_id, p_fingerprint_hash, p_local_device_id, 'shared_device_blocked', 'BIND-202',
-                jsonb_build_object('other_student_id', v_other_binding.student_id, 'user_agent', p_user_agent, 'ip', p_ip)
+                p_student_id, p_fingerprint_hash, p_local_device_id, 'proxy_detected'::device_event_type, 'BIND-202',
+                jsonb_build_object('other_student_id', v_other_binding.student_id, 'conflict_binding_id', v_other_binding.id, 'user_agent', p_user_agent, 'ip', p_ip),
+                p_ip, p_user_agent
             );
 
             RETURN jsonb_build_object(
@@ -164,13 +179,14 @@ BEGIN
                 'reference_code', 'BIND-202'
             );
 
-        -- 6. IF p_incognito_signal = true on first-ever bind (C1 case 2):
+        -- 6. Incognito signal on first-ever bind (C1 case 2)
         ELSIF p_incognito_signal = true THEN
             INSERT INTO public.device_events (
-                student_id, fingerprint_hash, device_id, event_type, reference_code, metadata
+                student_id, fingerprint_hash, device_id, event_type, reference_code, metadata, ip, user_agent
             ) VALUES (
-                p_student_id, p_fingerprint_hash, p_local_device_id, 'incognito_new_bind_blocked', 'BIND-205',
-                jsonb_build_object('user_agent', p_user_agent, 'ip', p_ip, 'incognito_signal', true)
+                p_student_id, p_fingerprint_hash, p_local_device_id, 'cookie_missing'::device_event_type, 'BIND-205',
+                jsonb_build_object('user_agent', p_user_agent, 'ip', p_ip, 'incognito_signal', true),
+                p_ip, p_user_agent
             );
 
             RETURN jsonb_build_object(
@@ -179,26 +195,30 @@ BEGIN
                 'reference_code', 'BIND-205'
             );
 
-        -- 7. ELSE create new binding, set attempt.fingerprint_hash + device_bound = true, issue cookie:
+        -- 7. Initial bind: create new active binding
         ELSE
             INSERT INTO public.device_bindings (
                 student_id,
                 fingerprint_hash,
                 device_id,
                 trusted_cookie_hash,
+                user_agent,
+                first_bound_at,
+                last_seen_at,
                 status,
-                first_seen_at,
-                last_used_at,
-                metadata
+                metadata,
+                updated_at
             ) VALUES (
                 p_student_id,
                 p_fingerprint_hash,
                 p_local_device_id,
                 p_cookie_token_hash,
+                p_user_agent,
+                clock_timestamp(),
+                clock_timestamp(),
                 'active',
-                clock_timestamp(),
-                clock_timestamp(),
-                jsonb_build_object('user_agent', p_user_agent, 'ip', p_ip)
+                jsonb_build_object('user_agent', p_user_agent, 'ip', p_ip),
+                clock_timestamp()
             ) RETURNING id INTO v_new_binding_id;
 
             IF p_attempt_id IS NOT NULL THEN
@@ -209,10 +229,11 @@ BEGIN
             END IF;
 
             INSERT INTO public.device_events (
-                student_id, fingerprint_hash, device_id, event_type, reference_code, metadata
+                student_id, fingerprint_hash, device_id, event_type, reference_code, metadata, ip, user_agent
             ) VALUES (
-                p_student_id, p_fingerprint_hash, p_local_device_id, 'initial_bind', 'BIND-200',
-                jsonb_build_object('binding_id', v_new_binding_id, 'user_agent', p_user_agent, 'ip', p_ip)
+                p_student_id, p_fingerprint_hash, p_local_device_id, 'bind'::device_event_type, 'BIND-200',
+                jsonb_build_object('binding_id', v_new_binding_id, 'user_agent', p_user_agent, 'ip', p_ip),
+                p_ip, p_user_agent
             );
 
             RETURN jsonb_build_object(
@@ -456,7 +477,11 @@ BEGIN
                 RETURN jsonb_build_object('success', false, 'error', 'OUTSIDE_CAMPUS_BOUNDARY', 'message', 'Location is outside authorized campus radius.');
             END IF;
         ELSE
-            RAISE EXCEPTION 'GEOFENCE_NOT_CONFIGURED';
+            RETURN jsonb_build_object(
+                'success', false,
+                'error', 'GEOFENCE_NOT_CONFIGURED',
+                'message', 'Campus boundary has not been configured in university settings.'
+            );
         END IF;
     END IF;
 
@@ -701,7 +726,11 @@ BEGIN
         v_distance := public.fn_haversine_distance_m(p_latitude, p_longitude, v_settings.campus_center_lat, v_settings.campus_center_lng);
         v_inside := (v_distance <= COALESCE(v_settings.campus_radius_m, 500.0));
     ELSIF v_settings.location_mode = 'enforce' THEN
-        RAISE EXCEPTION 'GEOFENCE_NOT_CONFIGURED';
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'GEOFENCE_NOT_CONFIGURED',
+            'message', 'Campus boundary has not been configured in university settings.'
+        );
     ELSE
         v_inside := true; -- Evidence only mode defaults to true when geofence unconfigured
     END IF;

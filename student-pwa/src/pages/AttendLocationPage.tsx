@@ -84,6 +84,12 @@ export const AttendLocationPage: React.FC = () => {
               setLoading(false);
               return;
             }
+            if (result.error === 'OUTSIDE_CLASSROOM_BOUNDARY') {
+              const distText = (result as any).distance_m !== undefined ? ` Detected distance: ${(result as any).distance_m}m.` : '';
+              setErrorStatus(`You are outside the classroom boundary. You must be within 50m of the lecturer to sign attendance.${distText}`);
+              setLoading(false);
+              return;
+            }
             if (result.error === 'OUTSIDE_CAMPUS_BOUNDARY') {
               setErrorStatus('You are outside the permitted lecture hall / campus area.');
               setLoading(false);
@@ -122,13 +128,14 @@ export const AttendLocationPage: React.FC = () => {
               navigate('/expired', { replace: true });
               return;
             }
-            if (err.code === 'SESSION_CLOSED' || err.status === 403) {
-              clearAttemptState();
-              navigate('/closed', { replace: true });
-              return;
-            }
             if (err.code === 'LOW_ACCURACY') {
               setErrorStatus(`GPS accuracy (±${accuracy.toFixed(1)}m) is too low. Move to open sky and retry.`);
+              setLoading(false);
+              return;
+            }
+            if (err.code === 'OUTSIDE_CLASSROOM_BOUNDARY') {
+              const distText = err.data?.distance_m !== undefined ? ` Detected distance: ${err.data.distance_m}m.` : '';
+              setErrorStatus(`You are outside the classroom boundary. You must be within 50m of the lecturer to sign attendance.${distText}`);
               setLoading(false);
               return;
             }
@@ -140,6 +147,11 @@ export const AttendLocationPage: React.FC = () => {
             if (err.code === 'GEOFENCE_NOT_CONFIGURED') {
               setErrorStatus('Campus boundary is not configured. Contact your lecturer.');
               setLoading(false);
+              return;
+            }
+            if (err.code === 'SESSION_CLOSED' || err.status === 403) {
+              clearAttemptState();
+              navigate('/closed', { replace: true });
               return;
             }
             setErrorStatus(err.message || 'Location verification failed.');
