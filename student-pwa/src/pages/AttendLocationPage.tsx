@@ -176,7 +176,7 @@ export const AttendLocationPage: React.FC = () => {
       },
       {
         enableHighAccuracy: true,
-        timeout: 15000,
+        timeout: 10000,
         maximumAge: 0,
       }
     );

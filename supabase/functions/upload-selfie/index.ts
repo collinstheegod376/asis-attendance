@@ -71,7 +71,7 @@ Deno.serve(async (req: Request) => {
     const attemptTokenHash = await sha256Hex(attemptToken);
     const { data: attempt, error: attemptErr } = await supabase
       .from('attendance_attempts')
-      .select('id, session_id, student_id, expires_at, completed_at, step')
+      .select('id, session_id, student_id, expires_at, completed_at, step, latitude, longitude')
       .eq('attempt_token_hash', attemptTokenHash)
       .maybeSingle();
 
@@ -101,6 +101,17 @@ Deno.serve(async (req: Request) => {
         message: 'Student identity has not been verified for this attempt.',
       }), {
         status: 400,
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Step Guard: Ensure location verification passed before accepting selfie upload
+    if (attempt.latitude == null || attempt.longitude == null || (attempt.step !== 'selfie' && attempt.step !== 'video')) {
+      return new Response(JSON.stringify({
+        error: 'LOCATION_REQUIRED',
+        message: 'Student location must be verified before uploading selfie proof.',
+      }), {
+        status: 403,
         headers: { ...baseHeaders, 'Content-Type': 'application/json' },
       });
     }

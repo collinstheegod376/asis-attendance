@@ -59,10 +59,21 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
   const [radiusM, setRadiusM] = useState<number>(50);
   const [locationAccuracy, setLocationAccuracy] = useState<number | null>(null);
   const [detectingLocation, setDetectingLocation] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
+  const [locationWarning, setLocationWarning] = useState<string | null>(null);
+  const [campusSettings, setCampusSettings] = useState<{
+    lat?: number;
+    lng?: number;
+    radius_m?: number;
+    location_mode?: string;
+  }>({});
 
   const handleCaptureLocation = async () => {
+    setLocationError(null);
+    setLocationWarning(null);
+
     if (!navigator.geolocation) {
-      alert('Geolocation is not supported by your browser.');
+      setLocationError('Geolocation is not supported by your browser. Please enter coordinates manually below.');
       return;
     }
     setDetectingLocation(true);
@@ -89,14 +100,50 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
 
       readings.sort((a, b) => a.coords.accuracy - b.coords.accuracy);
       const best = readings[0];
-      setSessionLat(parseFloat(best.coords.latitude.toFixed(6)));
-      setSessionLng(parseFloat(best.coords.longitude.toFixed(6)));
+      const lat = parseFloat(best.coords.latitude.toFixed(6));
+      const lng = parseFloat(best.coords.longitude.toFixed(6));
+      setSessionLat(lat);
+      setSessionLng(lng);
       setLocationAccuracy(Math.round(best.coords.accuracy * 10) / 10);
       setRadiusM(50);
       if (!locationName) setLocationName('Classroom Lecture Hall');
       setUseGeofence(true);
+      setLocationError(null);
+
+      // Check distance against campus center (Loophole 4: Remote setup detection)
+      if (campusSettings.lat != null && campusSettings.lng != null) {
+        const toRad = (deg: number) => (deg * Math.PI) / 180;
+        const dLat = toRad(lat - campusSettings.lat);
+        const dLng = toRad(lng - campusSettings.lng);
+        const a =
+          Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+          Math.cos(toRad(campusSettings.lat)) *
+            Math.cos(toRad(lat)) *
+            Math.sin(dLng / 2) *
+            Math.sin(dLng / 2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        const distM = 6371000 * c;
+        const campusRadius = campusSettings.radius_m || 5000;
+
+        if (distM > campusRadius) {
+          const km = (distM / 1000).toFixed(1);
+          setLocationWarning(
+            `Notice: Your current captured location (${lat}, ${lng}) is ~${km} km outside the ADUN campus boundary. If you are preparing this session remotely, please enter the physical classroom's campus coordinates manually, or disable Classroom Geofence to use institutional fallback.`
+          );
+        } else {
+          setLocationWarning(null);
+        }
+      }
     } catch (err: any) {
-      alert('Could not capture location: ' + (err?.message || 'GPS fix timed out'));
+      let msg = 'Could not capture GPS location: ' + (err?.message || 'GPS fix timed out');
+      if (err?.code === 1) {
+        msg = 'Geolocation permission was denied by your browser. Please allow location permissions in your browser address bar, or enter classroom coordinates manually below.';
+      } else if (err?.code === 2) {
+        msg = 'GPS fix unavailable on your current device or network. Please enter coordinates manually below.';
+      } else if (err?.code === 3) {
+        msg = 'GPS acquisition timed out. Please retry or enter classroom coordinates manually below.';
+      }
+      setLocationError(msg);
     } finally {
       setDetectingLocation(false);
     }
@@ -121,6 +168,12 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
       setMaxDuration(settings.max_session_duration_minutes || 180);
       setDurationMinutes(settings.default_session_duration_minutes || 60);
       setGraceMinutes(settings.grace_minutes || 10);
+      setCampusSettings({
+        lat: settings.campus_center_lat,
+        lng: settings.campus_center_lng,
+        radius_m: settings.campus_radius_m || 5000,
+        location_mode: settings.location_mode || 'enforce',
+      });
     });
 
     // Default startsAt to current Africa/Lagos datetime in datetime-local format
@@ -153,6 +206,30 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
       return;
     }
 
+    // Classroom geofence validation
+    if (useGeofence) {
+      if (sessionLat === '' || sessionLng === '' || isNaN(Number(sessionLat)) || isNaN(Number(sessionLng))) {
+        setFormError(
+          'Classroom Location Geofence is enabled. Please capture your classroom location or enter valid Latitude (-90 to 90) and Longitude (-180 to 180) coordinates, or uncheck the geofence option.'
+        );
+        return;
+      }
+      const numLat = Number(sessionLat);
+      const numLng = Number(sessionLng);
+      if (numLat < -90 || numLat > 90) {
+        setFormError('Classroom Latitude must be between -90 and 90 degrees.');
+        return;
+      }
+      if (numLng < -180 || numLng > 180) {
+        setFormError('Classroom Longitude must be between -180 and 180 degrees.');
+        return;
+      }
+      if (radiusM < 10 || radiusM > 500) {
+        setFormError('Classroom radius must be between 10 and 500 meters.');
+        return;
+      }
+    }
+
     // Parse startsAt explicitly as Africa/Lagos (WAT, UTC+1)
     const isoStartsAt = parseDateTimeLocalAsWAT(startsAt);
 
@@ -167,7 +244,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
         latitude: useGeofence && typeof sessionLat === 'number' ? sessionLat : null,
         longitude: useGeofence && typeof sessionLng === 'number' ? sessionLng : null,
         radius_m: useGeofence ? radiusM : 50,
-        location_name: useGeofence ? locationName.trim() : null,
+        location_name: useGeofence && locationName.trim() ? locationName.trim() : null,
       },
       { id: user.id, name: user.name }
     );
@@ -381,7 +458,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                       <MapPin className="w-3.5 h-3.5 text-blue-600" />
                       Classroom Geofence:
                     </span>
-                    {session.latitude && session.longitude ? (
+                    {session.latitude != null && session.longitude != null ? (
                       <span className="font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200 text-[11px]">
                         {session.location_name || 'Classroom'} (&plusmn;{session.radius_m || 50}m)
                       </span>
@@ -593,6 +670,22 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
 
                     {useGeofence && (
                       <div className="space-y-3 pt-2 border-t border-blue-100">
+                        {/* Location Error / Fallback Banner */}
+                        {locationError && (
+                          <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium flex items-start gap-2">
+                            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                            <span>{locationError}</span>
+                          </div>
+                        )}
+
+                        {/* Location Off-Campus Warning Banner (Fixes Loophole 4) */}
+                        {locationWarning && (
+                          <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs font-medium flex items-start gap-2">
+                            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                            <span>{locationWarning}</span>
+                          </div>
+                        )}
+
                         {/* Capture Location Button & Accuracy Badge */}
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                           <button
@@ -650,11 +743,13 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
 
                           <div>
                             <label className="block text-[10px] font-bold uppercase text-slate-600 mb-1">
-                              Latitude (Manual)
+                              Latitude (Manual -90 to 90)
                             </label>
                             <input
                               type="number"
                               step="any"
+                              min="-90"
+                              max="90"
                               placeholder="e.g. 6.111800"
                               value={sessionLat}
                               onChange={e => setSessionLat(e.target.value === '' ? '' : parseFloat(e.target.value))}
@@ -664,11 +759,13 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
 
                           <div>
                             <label className="block text-[10px] font-bold uppercase text-slate-600 mb-1">
-                              Longitude (Manual)
+                              Longitude (Manual -180 to 180)
                             </label>
                             <input
                               type="number"
                               step="any"
+                              min="-180"
+                              max="180"
                               placeholder="e.g. 6.601100"
                               value={sessionLng}
                               onChange={e => setSessionLng(e.target.value === '' ? '' : parseFloat(e.target.value))}

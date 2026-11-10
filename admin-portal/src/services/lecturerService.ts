@@ -544,10 +544,10 @@ export class LecturerService {
       const course = await this.getCourseById(courseId);
       if (!course) return { success: false, error: 'Course not found.' };
 
-      // 2. Fetch max allowed duration from settings
+      // 2. Fetch max allowed duration and campus geofence settings
       const { data: settings } = await supabase
         .from('settings')
-        .select('max_session_duration_minutes, default_session_duration_minutes, grace_minutes')
+        .select('max_session_duration_minutes, default_session_duration_minutes, grace_minutes, location_mode, campus_center_lat, campus_center_lng, campus_radius_m')
         .limit(1)
         .maybeSingle();
 
@@ -579,6 +579,77 @@ export class LecturerService {
       const now = new Date();
       const status: SessionStatus = startsAtDate.getTime() > now.getTime() ? 'scheduled' : 'active';
 
+      // 3. Geofence coordinate & radius validation
+      const hasLat = data.latitude !== undefined && data.latitude !== null && (data.latitude as any) !== '';
+      const hasLng = data.longitude !== undefined && data.longitude !== null && (data.longitude as any) !== '';
+
+      if (hasLat !== hasLng) {
+        return {
+          success: false,
+          error: 'Both latitude and longitude must be provided for a classroom location geofence, or both omitted.',
+        };
+      }
+
+      let validLat: number | null = null;
+      let validLng: number | null = null;
+      let validRadius = 50.0;
+
+      if (hasLat && hasLng) {
+        validLat = Number(data.latitude);
+        validLng = Number(data.longitude);
+
+        if (isNaN(validLat) || validLat < -90 || validLat > 90) {
+          return {
+            success: false,
+            error: 'Classroom latitude must be a valid number between -90 and 90 degrees.',
+          };
+        }
+
+        if (isNaN(validLng) || validLng < -180 || validLng > 180) {
+          return {
+            success: false,
+            error: 'Classroom longitude must be a valid number between -180 and 180 degrees.',
+          };
+        }
+
+        if (data.radius_m !== undefined && data.radius_m !== null) {
+          const r = Number(data.radius_m);
+          if (isNaN(r) || r < 10 || r > 500) {
+            return {
+              success: false,
+              error: 'Classroom geofence radius must be between 10 and 500 meters.',
+            };
+          }
+          validRadius = r;
+        }
+
+        // Campus boundary enforcement check (Fixes Loophole 4)
+        if (settings?.location_mode === 'enforce') {
+          if (settings.campus_center_lat != null && settings.campus_center_lng != null) {
+            const campusRadius = settings.campus_radius_m || 5000;
+            const toRad = (deg: number) => (deg * Math.PI) / 180;
+            const dLat = toRad(validLat - settings.campus_center_lat);
+            const dLng = toRad(validLng - settings.campus_center_lng);
+            const a =
+              Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(toRad(settings.campus_center_lat)) *
+                Math.cos(toRad(validLat)) *
+                Math.sin(dLng / 2) *
+                Math.sin(dLng / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            const distM = 6371000 * c;
+
+            if (distM > campusRadius) {
+              const km = (distM / 1000).toFixed(1);
+              return {
+                success: false,
+                error: `Classroom coordinates (${validLat}, ${validLng}) are outside the university campus boundary (~${km} km away). All lecture sessions must be located on campus. If preparing remotely, enter classroom campus coordinates manually or disable Classroom Geofence to use institutional fallback.`,
+              };
+            }
+          }
+        }
+      }
+
       // High entropy raw token (pre-image) and token hash
       const rawToken = generateHighEntropyToken();
       const tokenHash = await sha256Hex(rawToken);
@@ -594,10 +665,10 @@ export class LecturerService {
           grace_minutes: graceMinutes,
           status,
           created_by: actor.id,
-          latitude: data.latitude !== undefined ? data.latitude : null,
-          longitude: data.longitude !== undefined ? data.longitude : null,
-          radius_m: data.radius_m ?? 50.0,
-          location_name: data.location_name ?? null,
+          latitude: validLat,
+          longitude: validLng,
+          radius_m: validRadius,
+          location_name: validLat !== null && data.location_name ? data.location_name.trim() : null,
         })
         .select()
         .single();
