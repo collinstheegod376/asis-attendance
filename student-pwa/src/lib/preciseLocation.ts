@@ -52,12 +52,16 @@ export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Pr
     // Timeout safety net: accept best fix if available, else fail with clear reason
     timer = setTimeout(() => {
       cleanup();
-      if (bestReading) {
+      if (bestReading && bestReading.coords.accuracy <= targetAccuracyM) {
         resolve({
           latitude: bestReading.coords.latitude,
           longitude: bestReading.coords.longitude,
           accuracy: bestReading.coords.accuracy,
         });
+      } else if (bestReading) {
+        const lowAccErr = new Error('Low accuracy after timeout');
+        (lowAccErr as any).code = 2; // reuse code 2 for low accuracy
+        reject(lowAccErr);
       } else {
         const timeoutErr = new Error('GPS satellite acquisition timed out. Ensure location services are turned on and retry.');
         (timeoutErr as any).code = 3;
