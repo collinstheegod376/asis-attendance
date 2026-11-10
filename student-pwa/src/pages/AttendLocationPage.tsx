@@ -4,6 +4,7 @@ import { MapPin, CheckCircle2, AlertTriangle, RefreshCw, ArrowRight, ShieldCheck
 import { Header } from '../components/Header';
 import { getAttemptState, updateAttemptLocation, clearAttemptState } from '../lib/attemptState';
 import { attendanceService, ApiError } from '../lib/attendanceService';
+import { acquirePreciseLocation } from '../lib/preciseLocation';
 
 export const AttendLocationPage: React.FC = () => {
   const navigate = useNavigate();
@@ -14,6 +15,8 @@ export const AttendLocationPage: React.FC = () => {
   const [errorStatus, setErrorStatus] = useState<string | null>(null);
   const [verifiedSuccess, setVerifiedSuccess] = useState(false);
   const [boundaryStatus, setBoundaryStatus] = useState<string | null>(null);
+  const [liveAccuracy, setLiveAccuracy] = useState<number | null>(null);
+  const [gpsProgressStep, setGpsProgressStep] = useState<string>('Acquiring satellite GPS lock...');
 
   // Step Guard: Identity must be completed
   useEffect(() => {
@@ -31,155 +34,140 @@ export const AttendLocationPage: React.FC = () => {
     requestLocation();
   }, []);
 
-  const requestLocation = () => {
+  const requestLocation = async () => {
     setLoading(true);
     setErrorStatus(null);
     setVerifiedSuccess(false);
     setBoundaryStatus(null);
+    setLiveAccuracy(null);
+    setGpsProgressStep('Waking up satellite receiver...');
 
-    if (!('geolocation' in navigator)) {
-      setErrorStatus('Geolocation is not supported by your mobile browser.');
-      setLoading(false);
-      return;
-    }
+    try {
+      // Actively wake up GPS satellite hardware receiver using watchPosition
+      // Guaranteed enableHighAccuracy: true, maximumAge: 0 (No cached / cell-tower fallback)
+      const precise = await acquirePreciseLocation({
+        timeoutMs: 12000,
+        targetAccuracyM: 15,
+        onProgress: (p) => {
+          setLiveAccuracy(p.accuracy);
+          setGpsProgressStep(p.step);
+        },
+      });
 
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        const lat = pos.coords.latitude;
-        const lng = pos.coords.longitude;
-        // Pass raw floating-point accuracy, never Math.round (Fixes SEC-07, PERF-12)
-        const accuracy = pos.coords.accuracy;
+      const lat = precise.latitude;
+      const lng = precise.longitude;
+      const accuracy = precise.accuracy;
 
-        setCoords({ lat, lng, accuracy });
+      setCoords({ lat, lng, accuracy });
 
-        try {
-          if (!attempt?.attempt_token) {
-            clearAttemptState();
-            navigate('/expired', { replace: true });
-            return;
-          }
-
-          // Call backend location verification Edge Function
-          const result = await attendanceService.verifyLocation({
-            attemptToken: attempt.attempt_token,
-            latitude: lat,
-            longitude: lng,
-            accuracyM: accuracy,
-          });
-
-          if (!result.success) {
-            setVerifiedSuccess(false);
-            if (result.error === 'ATTEMPT_EXPIRED' || result.error === 'SESSION_EXPIRED') {
-              clearAttemptState();
-              navigate('/expired', { replace: true });
-              return;
-            }
-            if (result.error === 'SESSION_CLOSED') {
-              clearAttemptState();
-              navigate('/closed', { replace: true });
-              return;
-            }
-            if (result.error === 'LOW_ACCURACY') {
-              setErrorStatus(`GPS accuracy (±${accuracy.toFixed(1)}m) is too low. Move outdoors or closer to open sky and retry.`);
-              setLoading(false);
-              return;
-            }
-            if (result.error === 'OUTSIDE_CLASSROOM_BOUNDARY') {
-              const distText = (result as any).distance_m !== undefined ? ` Detected distance: ${(result as any).distance_m}m.` : '';
-              setErrorStatus(`You are outside the classroom boundary. You must be within 50m of the lecturer to sign attendance.${distText}`);
-              setLoading(false);
-              return;
-            }
-            if (result.error === 'OUTSIDE_CAMPUS_BOUNDARY') {
-              setErrorStatus('You are outside the permitted lecture hall / campus area.');
-              setLoading(false);
-              return;
-            }
-            if (result.error === 'GEOFENCE_NOT_CONFIGURED') {
-              setErrorStatus('Campus boundary is not configured. Contact your lecturer.');
-              setLoading(false);
-              return;
-            }
-
-            setErrorStatus(result.message || 'Location could not be verified.');
-            setLoading(false);
-            return;
-          }
-
-          // Verified success!
-          setBoundaryStatus('Inside verified lecture perimeter');
-          updateAttemptLocation({
-            latitude: lat,
-            longitude: lng,
-            accuracy_m: accuracy,
-            verified_at: new Date().toISOString(),
-            inside_boundary: result.inside_boundary,
-          });
-
-          setVerifiedSuccess(true);
-        } catch (err: unknown) {
-          // FAIL CLOSED — NEVER setVerifiedSuccess(true) on error (Fixes SEC-07, QA-08, PERF-12)
-          console.error('Location verification exception:', err);
-          setVerifiedSuccess(false);
-
-          if (err instanceof ApiError) {
-            if (err.code === 'ATTEMPT_EXPIRED' || err.status === 410) {
-              clearAttemptState();
-              navigate('/expired', { replace: true });
-              return;
-            }
-            if (err.code === 'LOW_ACCURACY') {
-              setErrorStatus(`GPS accuracy (±${accuracy.toFixed(1)}m) is too low. Move to open sky and retry.`);
-              setLoading(false);
-              return;
-            }
-            if (err.code === 'OUTSIDE_CLASSROOM_BOUNDARY') {
-              const distText = err.data?.distance_m !== undefined ? ` Detected distance: ${err.data.distance_m}m.` : '';
-              setErrorStatus(`You are outside the classroom boundary. You must be within 50m of the lecturer to sign attendance.${distText}`);
-              setLoading(false);
-              return;
-            }
-            if (err.code === 'OUTSIDE_CAMPUS_BOUNDARY') {
-              setErrorStatus('You are outside the permitted lecture hall / campus boundary.');
-              setLoading(false);
-              return;
-            }
-            if (err.code === 'GEOFENCE_NOT_CONFIGURED') {
-              setErrorStatus('Campus boundary is not configured. Contact your lecturer.');
-              setLoading(false);
-              return;
-            }
-            if (err.code === 'SESSION_CLOSED' || err.status === 403) {
-              clearAttemptState();
-              navigate('/closed', { replace: true });
-              return;
-            }
-            setErrorStatus(err.message || 'Location verification failed.');
-          } else {
-            setErrorStatus('Could not reach the university server. Check your connection and retry.');
-          }
-        } finally {
-          setLoading(false);
-        }
-      },
-      (err) => {
-        console.error('Geolocation error:', err);
-        setLoading(false);
-        setVerifiedSuccess(false);
-        if (err.code === err.PERMISSION_DENIED) {
-          setErrorStatus('Location permission was denied. Please allow location access in your browser or phone settings.');
-        } else if (err.code === err.POSITION_UNAVAILABLE) {
-          setErrorStatus('GPS position unavailable. Ensure your device location / GPS is turned on.');
-        } else {
-          setErrorStatus('Location request timed out. Please tap retry.');
-        }
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 0,
+      if (!attempt?.attempt_token) {
+        clearAttemptState();
+        navigate('/expired', { replace: true });
+        return;
       }
-    );
+
+      // Call backend location verification Edge Function
+      const result = await attendanceService.verifyLocation({
+        attemptToken: attempt.attempt_token,
+        latitude: lat,
+        longitude: lng,
+        accuracyM: accuracy,
+      });
+
+      if (!result.success) {
+        setVerifiedSuccess(false);
+        if (result.error === 'ATTEMPT_EXPIRED' || result.error === 'SESSION_EXPIRED') {
+          clearAttemptState();
+          navigate('/expired', { replace: true });
+          return;
+        }
+        if (result.error === 'SESSION_CLOSED') {
+          clearAttemptState();
+          navigate('/closed', { replace: true });
+          return;
+        }
+        if (result.error === 'LOW_ACCURACY') {
+          setErrorStatus(`GPS accuracy (±${accuracy.toFixed(1)}m) is too coarse. Move closer to open sky and tap retry.`);
+          setLoading(false);
+          return;
+        }
+        if (result.error === 'OUTSIDE_CLASSROOM_BOUNDARY') {
+          const distText = (result as any).distance_m !== undefined ? ` Detected distance: ${(result as any).distance_m}m.` : '';
+          setErrorStatus(`You are outside the classroom boundary. You must be within 50m of the lecturer to sign attendance.${distText}`);
+          setLoading(false);
+          return;
+        }
+        if (result.error === 'NO_CLASSROOM_LOCATION') {
+          setErrorStatus('This lecture session does not have a classroom location configured. Please notify your lecturer.');
+          setLoading(false);
+          return;
+        }
+        if (result.error === 'OUTSIDE_CAMPUS_BOUNDARY') {
+          setErrorStatus('You are outside the permitted lecture hall / campus area.');
+          setLoading(false);
+          return;
+        }
+
+        setErrorStatus(result.message || 'Location could not be verified.');
+        setLoading(false);
+        return;
+      }
+
+      // Verified success!
+      setBoundaryStatus('Inside classroom geofence (50m)');
+      updateAttemptLocation({
+        latitude: lat,
+        longitude: lng,
+        accuracy_m: accuracy,
+        verified_at: new Date().toISOString(),
+        inside_boundary: result.inside_boundary,
+      });
+
+      setVerifiedSuccess(true);
+    } catch (err: any) {
+      console.error('Location verification exception:', err);
+      setVerifiedSuccess(false);
+
+      if (err instanceof ApiError) {
+        if (err.code === 'ATTEMPT_EXPIRED' || err.status === 410) {
+          clearAttemptState();
+          navigate('/expired', { replace: true });
+          return;
+        }
+        if (err.code === 'LOW_ACCURACY') {
+          setErrorStatus(`GPS accuracy is too coarse. Move to open sky and retry.`);
+          setLoading(false);
+          return;
+        }
+        if (err.code === 'OUTSIDE_CLASSROOM_BOUNDARY') {
+          const distText = err.data?.distance_m !== undefined ? ` Detected distance: ${err.data.distance_m}m.` : '';
+          setErrorStatus(`You are outside the classroom boundary. You must be within 50m of the lecturer to sign attendance.${distText}`);
+          setLoading(false);
+          return;
+        }
+        if (err.code === 'NO_CLASSROOM_LOCATION') {
+          setErrorStatus('This lecture session does not have a classroom location configured. Please notify your lecturer.');
+          setLoading(false);
+          return;
+        }
+        if (err.code === 'SESSION_CLOSED' || err.status === 403) {
+          clearAttemptState();
+          navigate('/closed', { replace: true });
+          return;
+        }
+        setErrorStatus(err.message || 'Location verification failed.');
+      } else if (err?.code === 1) {
+        setErrorStatus('Location permission was denied. Please allow location access in your browser or phone settings.');
+      } else if (err?.code === 2) {
+        setErrorStatus('GPS position unavailable. Ensure your device location / GPS is turned on.');
+      } else if (err?.code === 3) {
+        setErrorStatus('GPS satellite lock timed out. Please tap retry.');
+      } else {
+        setErrorStatus(err?.message || 'Could not verify GPS position. Tap retry.');
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleProceed = () => {
@@ -214,9 +202,14 @@ export const AttendLocationPage: React.FC = () => {
             <div className="py-5 sm:py-6 flex flex-col items-center justify-center gap-3">
               <RefreshCw className="w-8 h-8 text-[#1E40AF] animate-spin" />
               <p className="text-xs font-semibold text-slate-700">
-                Acquiring high-accuracy satellite GPS...
+                {liveAccuracy !== null
+                  ? `Acquiring GPS fix (±${liveAccuracy.toFixed(1)}m)...`
+                  : 'Acquiring high-accuracy satellite GPS...'}
               </p>
-              <p className="text-[11px] text-slate-400">
+              <p className="text-[11px] text-slate-500 font-medium">
+                {gpsProgressStep}
+              </p>
+              <p className="text-[10px] text-slate-400">
                 Hold phone steady near open view
               </p>
             </div>
