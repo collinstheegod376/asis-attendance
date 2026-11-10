@@ -110,6 +110,7 @@ Deno.serve(async (req: Request) => {
       expires_at: result.expires_at,
       step: result.step,
       student_id: result.student_id ?? null,
+      location_enabled: Boolean(result.location_enabled),
     }), {
       status: 200,
       headers: { ...baseHeaders, 'Content-Type': 'application/json' },

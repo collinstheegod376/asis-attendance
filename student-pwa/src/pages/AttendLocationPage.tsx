@@ -31,7 +31,7 @@ export const AttendLocationPage: React.FC = () => {
       return;
     }
 
-    if (attempt.session?.location_enabled === false) {
+    if (!attempt.session?.location_enabled) {
       navigate('/attend/selfie', { replace: true });
       return;
     }
@@ -41,7 +41,7 @@ export const AttendLocationPage: React.FC = () => {
 
   const requestLocation = async () => {
     // If lecturer has not enabled location verification, skip GPS and go straight to selfie capture
-    if (attempt?.session?.location_enabled === false) {
+    if (!attempt?.session?.location_enabled) {
       navigate('/attend/selfie', { replace: true });
       return;
     }

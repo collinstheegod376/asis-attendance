@@ -10,7 +10,7 @@ interface StepperProps {
 
 export const Stepper: React.FC<StepperProps> = ({ currentStep }) => {
   const attempt = getAttemptState();
-  const locationEnabled = attempt?.session?.location_enabled !== false;
+  const locationEnabled = Boolean(attempt?.session?.location_enabled);
 
   const rawSteps: { key: StepKey; label: string }[] = locationEnabled
     ? [

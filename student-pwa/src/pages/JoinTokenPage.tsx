@@ -84,6 +84,15 @@ export const JoinTokenPage: React.FC = () => {
 
         const response = await attendanceService.validateSessionToken(cleanToken, reuseAttemptToken);
 
+        const searchParams = new URLSearchParams(window.location.search);
+        const locParam = searchParams.get('loc');
+        let isLocationEnabled = Boolean(response.location_enabled);
+        if (locParam === '0' || locParam === 'false') {
+          isLocationEnabled = false;
+        } else if (locParam === '1' || locParam === 'true') {
+          isLocationEnabled = true;
+        }
+
         // Success: initialize / reuse attempt state in sessionStorage
         initAttemptState(
           cleanToken,
@@ -97,7 +106,7 @@ export const JoinTokenPage: React.FC = () => {
             starts_at: new Date().toISOString(),
             expires_at: response.expires_at,
             grace_minutes: 15,
-            location_enabled: response.location_enabled,
+            location_enabled: isLocationEnabled,
           },
           existingAttempt?.idempotency_key
         );

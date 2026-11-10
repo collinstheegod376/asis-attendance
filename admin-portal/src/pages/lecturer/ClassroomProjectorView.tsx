@@ -112,7 +112,8 @@ export const ClassroomProjectorView: React.FC = () => {
 
     const host = getStudentPwaUrl();
     const token = session.raw_token || session.id;
-    const joinUrl = `${host}/join/${token}`;
+    const hasLoc = session.latitude != null && session.longitude != null;
+    const joinUrl = `${host}/join/${token}?loc=${hasLoc ? '1' : '0'}`;
 
     QRCode.toDataURL(joinUrl, {
       errorCorrectionLevel: 'H',
@@ -246,7 +247,8 @@ export const ClassroomProjectorView: React.FC = () => {
     if (!session) return;
     const host = getStudentPwaUrl();
     const token = session.raw_token || session.id;
-    const joinUrl = `${host}/join/${token}`;
+    const hasLoc = session.latitude != null && session.longitude != null;
+    const joinUrl = `${host}/join/${token}?loc=${hasLoc ? '1' : '0'}`;
     navigator.clipboard.writeText(joinUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -298,7 +300,8 @@ export const ClassroomProjectorView: React.FC = () => {
 
   const joinHost = getStudentPwaUrl();
   const token = session.raw_token || session.id;
-  const joinUrl = `${joinHost}/join/${token}`;
+  const hasLoc = session.latitude != null && session.longitude != null;
+  const joinUrl = `${joinHost}/join/${token}?loc=${hasLoc ? '1' : '0'}`;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans select-none overflow-x-hidden">

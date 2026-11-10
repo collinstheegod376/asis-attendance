@@ -261,7 +261,8 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
   const handleCopyLink = (session: LectureSession) => {
     const host = getStudentPwaUrl();
     const token = session.raw_token || session.id;
-    const joinUrl = `${host}/join/${token}`;
+    const hasLoc = session.latitude != null && session.longitude != null;
+    const joinUrl = `${host}/join/${token}?loc=${hasLoc ? '1' : '0'}`;
     navigator.clipboard.writeText(joinUrl);
     setCopiedId(session.id);
     setTimeout(() => setCopiedId(null), 2000);
