@@ -119,11 +119,16 @@ Deno.serve(async (req: Request) => {
       const status =
         errCode === 'OUTSIDE_CAMPUS_BOUNDARY' ||
         errCode === 'OUTSIDE_CLASSROOM_BOUNDARY' ||
+        errCode === 'OUTSIDE_FENCE' ||
         errCode === 'LOW_ACCURACY' ||
         errCode === 'SESSION_CLOSED'
           ? 403
-          : errCode === 'ATTEMPT_EXPIRED' || errCode === 'SESSION_EXPIRED'
+          : errCode === 'ATTEMPT_EXPIRED' ||
+            errCode === 'SESSION_EXPIRED' ||
+            errCode === 'SESSION_ENDED'
           ? 410
+          : errCode === 'INVALID_ACCURACY'
+          ? 400
           : 400;
 
       return new Response(JSON.stringify({
@@ -134,6 +139,7 @@ Deno.serve(async (req: Request) => {
         ...(result.allowed_radius_m !== undefined ? { allowed_radius_m: result.allowed_radius_m } : {}),
         ...(result.accuracy_m !== undefined ? { accuracy_m: result.accuracy_m } : {}),
         ...(result.max_accuracy_m !== undefined ? { max_accuracy_m: result.max_accuracy_m } : {}),
+        ...(result.hint !== undefined ? { hint: result.hint } : {}),
       }), {
         status,
         headers: { ...baseHeaders, 'Content-Type': 'application/json' },
@@ -147,6 +153,7 @@ Deno.serve(async (req: Request) => {
       ...(result.distance_m !== undefined ? { distance_m: result.distance_m } : {}),
       ...(result.allowed_radius_m !== undefined ? { allowed_radius_m: result.allowed_radius_m } : {}),
       ...(result.accuracy_m !== undefined ? { accuracy_m: result.accuracy_m } : {}),
+      ...(result.hint !== undefined ? { hint: result.hint } : {}),
       ...(result.message ? { message: result.message } : {}),
     }), {
       status: 200,

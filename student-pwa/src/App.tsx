@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { AlertTriangle } from 'lucide-react';
 
 // Pages
 import { LandingPage } from './pages/LandingPage';
@@ -25,13 +27,33 @@ import { DeviceInUseBlockPage } from './pages/block/DeviceInUseBlockPage';
 import { SharedDeviceBlockPage } from './pages/block/SharedDeviceBlockPage';
 import { ContactAdminBlockPage } from './pages/block/ContactAdminBlockPage';
 
-// Offline Guard
+// Offline Guard & Heartbeat
 import { OfflineGuard } from './components/OfflineGuard';
+import { heartbeatManager } from './lib/heartbeatManager';
 
 export function App() {
+  const [outsideFenceBanner, setOutsideFenceBanner] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = heartbeatManager.subscribe((status) => {
+      setOutsideFenceBanner(status.active && status.insideFence === false);
+    });
+    return unsubscribe;
+  }, []);
+
   return (
     <BrowserRouter>
       <OfflineGuard>
+        {outsideFenceBanner && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="sticky top-0 z-50 w-full bg-amber-50 border-b border-amber-200 px-3 py-2 text-amber-900 text-xs font-medium flex items-center justify-center gap-2 shadow-xs"
+          >
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>You appear to have left the classroom. Your attendance may be marked partial.</span>
+          </div>
+        )}
         <Routes>
           {/* Public landing */}
           <Route path="/" element={<LandingPage />} />

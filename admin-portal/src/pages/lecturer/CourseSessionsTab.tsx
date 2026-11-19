@@ -46,8 +46,9 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
   // Form states
   const [title, setTitle] = useState('');
   const [startsAt, setStartsAt] = useState('');
-  const [durationMinutes, setDurationMinutes] = useState(60);
+  const [durationMinutes, setDurationMinutes] = useState(15);
   const [graceMinutes, setGraceMinutes] = useState(10);
+  const [liveMode, setLiveMode] = useState(true);
   const [formError, setFormError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [newSessionCreated, setNewSessionCreated] = useState<LectureSession | null>(null);
@@ -69,6 +70,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
     setNewSessionCreated(null);
     setTitle('');
     setStartsAt(formatToDateTimeLocalWAT(new Date()));
+    setLiveMode(true);
     setSessionLat('');
     setSessionLng('');
     setLocationName('');
@@ -95,7 +97,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
     setDetectingLocation(true);
     try {
       const precise = await acquirePreciseLocation({
-        timeoutMs: 8000,
+        timeoutMs: 15000,
         targetAccuracyM: 20,
         minSampleMs: 1500,
         onProgress: (p) => {
@@ -134,7 +136,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
     }
   };
 
-  const [maxDuration, setMaxDuration] = useState(180);
+  const [maxDuration, setMaxDuration] = useState(30);
 
   const loadSessions = async () => {
     setLoading(true);
@@ -150,8 +152,8 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
     loadSessions();
 
     AdminService.getSettings().then(settings => {
-      setMaxDuration(settings.max_session_duration_minutes || 180);
-      setDurationMinutes(settings.default_session_duration_minutes || 60);
+      setMaxDuration(settings.max_session_duration_minutes || 30);
+      setDurationMinutes(settings.default_session_duration_minutes || 15);
       setGraceMinutes(settings.grace_minutes || 10);
     });
 
@@ -218,6 +220,11 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
     const isoStartsAt = parseDateTimeLocalAsWAT(startsAt);
 
     setIsSubmitting(true);
+    const isTestMode = !liveMode;
+    const testModeExpiresAt = isTestMode
+      ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+      : null;
+
     const res = await LecturerService.createLectureSession(
       course.id,
       {
@@ -229,6 +236,8 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
         longitude: numLng,
         radius_m: validRadius || undefined,
         location_name: useGeofence ? (locationName.trim() || 'Classroom Lecture Hall') : null,
+        test_mode: isTestMode,
+        test_mode_expires_at: testModeExpiresAt,
       },
       { id: user.id, name: user.name }
     );
@@ -311,7 +320,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
             <span>Lecture Sessions &amp; Classroom QR Codes</span>
           </h3>
           <p className="text-xs text-slate-500 mt-0.5">
-            Create attendance sessions with static high-entropy QR codes. Open Projector Mode on the classroom screen.
+            Create attendance sessions with rotating live QR codes. Open Projector Mode on the classroom screen.
           </p>
         </div>
 
@@ -407,6 +416,19 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                   </span>
                 </div>
 
+                {/* Test mode banner */}
+                {session.test_mode && (
+                  <div className="mb-2 px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-[11px] font-semibold flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                    <span>
+                      TEST MODE until{' '}
+                      {session.test_mode_expires_at
+                        ? `${formatWATDate(session.test_mode_expires_at)} ${formatWATTime(session.test_mode_expires_at)}`
+                        : '24h'}
+                    </span>
+                  </div>
+                )}
+
                 {/* Session Timings & Metadata */}
                 <div className="space-y-1.5 my-3 text-xs text-slate-600 bg-slate-50 p-3 rounded-xl border border-slate-100">
                   <div className="flex items-center justify-between">
@@ -470,7 +492,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                       </Link>
                     )}
 
-                    {!isRevoked && !isClosed && (
+                    {!isRevoked && !isClosed && session.test_mode && (
                       <button
                         onClick={() => handleCopyLink(session)}
                         className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition cursor-pointer"
@@ -633,6 +655,44 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                     </div>
                   </div>
 
+                  {/* Live mode (scan QR required) Toggle */}
+                  <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-2.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <span className="text-xs font-bold text-slate-900 block">
+                          Live mode (scan QR required)
+                        </span>
+                        <span className="text-[11px] text-slate-500 block">
+                          Rotates QR code every 45s and disables link sharing
+                        </span>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                        <input
+                          type="checkbox"
+                          checked={liveMode}
+                          onChange={e => setLiveMode(e.target.checked)}
+                          className="sr-only peer"
+                        />
+                        <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                      </label>
+                    </div>
+
+                    {!liveMode && (
+                      <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-[11px] space-y-1">
+                        <div className="flex items-start gap-2 font-semibold">
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                          <span>
+                            Disabling live QR mode allows link sharing. Only use for testing.
+                          </span>
+                        </div>
+                        <p className="font-mono text-[10px] text-amber-800 pl-5">
+                          TEST MODE until{' '}
+                          {formatWATTime(new Date(Date.now() + 24 * 60 * 60 * 1000))} (24h)
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
                   {/* Classroom Location Geofence Section */}
                   <div className="p-4 rounded-2xl bg-blue-50/70 border border-blue-200/80 space-y-3">
                     <div className="flex items-center justify-between">
@@ -707,31 +767,52 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
 
                         {/* Coarse accuracy warning (> 35m) without inflating radius */}
                         {locationAccuracy !== null && locationAccuracy > 35 && (
-                          <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-[11px] font-medium flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                            <div className="flex items-start gap-2">
-                              <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
-                              <span>
-                                {locationAccuracy >= 500 ? (
-                                  <>
-                                    Browser returned an Approximate/Network location (<strong>&plusmn;{locationAccuracy}m</strong>).
-                                    Turn ON <strong>Precise Location</strong> for Safari/Chrome (or re-capture near a window), or proceed with the loaded coordinates below.
-                                  </>
-                                ) : (
-                                  <>
-                                    Indoor GPS drift detected (<strong>&plusmn;{locationAccuracy}m</strong>).
-                                    Your chosen <strong>{radiusM}m</strong> radius is preserved — you can proceed with the loaded coordinates or re-capture near a window.
-                                  </>
-                                )}
-                              </span>
+                          <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-[11px] font-medium space-y-2">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                              <div className="flex items-start gap-2">
+                                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                                <span>
+                                  {locationAccuracy >= 500 ? (
+                                    <>
+                                      Browser returned an Approximate/Network location (<strong>&plusmn;{locationAccuracy}m</strong>).
+                                      Turn ON <strong>Precise Location</strong> for Safari/Chrome (or re-capture near a window), or proceed with the loaded coordinates below.
+                                    </>
+                                  ) : (
+                                    <>
+                                      Indoor GPS drift detected (<strong>&plusmn;{locationAccuracy}m</strong>).
+                                      Your chosen <strong>{radiusM}m</strong> radius is preserved — you can proceed with the loaded coordinates or re-capture near a window.
+                                    </>
+                                  )}
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={handleCaptureLocation}
+                                disabled={detectingLocation}
+                                className="shrink-0 inline-flex items-center justify-center px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold transition cursor-pointer disabled:opacity-50"
+                              >
+                                Re-capture GPS
+                              </button>
                             </div>
-                            <button
-                              type="button"
-                              onClick={handleCaptureLocation}
-                              disabled={detectingLocation}
-                              className="shrink-0 inline-flex items-center justify-center px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold transition cursor-pointer disabled:opacity-50"
-                            >
-                              Re-capture GPS
-                            </button>
+
+                            {locationAccuracy > 120 && (
+                              <details className="pt-2 border-t border-amber-200/80 text-[11px] text-amber-950">
+                                <summary className="font-bold cursor-pointer select-none">
+                                  Troubleshooting: Precise Location (&plusmn;{Math.round(locationAccuracy)}m detected)
+                                </summary>
+                                <ul className="mt-1.5 space-y-1 pl-4 list-disc text-[10px] text-amber-900">
+                                  <li>
+                                    <strong>iOS Safari:</strong> Settings &rarr; Privacy &amp; Security &rarr; Location Services &rarr; Safari Websites &rarr; While Using the App &rarr; turn <strong>Precise Location ON</strong>.
+                                  </li>
+                                  <li>
+                                    <strong>Chrome on iOS:</strong> Settings &rarr; Privacy &amp; Security &rarr; Location Services &rarr; Chrome &rarr; While Using the App &rarr; turn <strong>Precise Location ON</strong>.
+                                  </li>
+                                  <li>
+                                    <strong>Android Chrome:</strong> Site Settings / App Info &rarr; Permissions &rarr; Location &rarr; Allow while using &amp; enable <strong>Use precise location</strong>.
+                                  </li>
+                                </ul>
+                              </details>
+                            )}
                           </div>
                         )}
 
@@ -760,18 +841,18 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                               onChange={e => setRadiusM(parseInt(e.target.value, 10) || 50)}
                               className="w-full px-2.5 py-2 rounded-xl border border-slate-300 text-xs bg-white font-medium focus:outline-hidden focus:ring-2 focus:ring-blue-600"
                             >
-                              <option value={25}>25m (Small Classroom)</option>
-                              <option value={35}>35m (Standard Classroom)</option>
-                              <option value={50}>50m (Default Lecture Hall)</option>
-                              <option value={75}>75m (Large Lecture Hall)</option>
-                              <option value={100}>100m (Auditorium)</option>
-                              <option value={150}>150m (Large Complex)</option>
-                              {![25, 35, 50, 75, 100, 150].includes(radiusM) && (
+                              <option value={20}>20m</option>
+                              <option value={30}>30m</option>
+                              <option value={40}>40m</option>
+                              <option value={50}>50m (Default)</option>
+                              <option value={75}>75m</option>
+                              <option value={100}>100m</option>
+                              {![20, 30, 40, 50, 75, 100].includes(radiusM) && (
                                 <option value={radiusM}>{radiusM}m (Custom)</option>
                               )}
                             </select>
                             <span className="text-[10px] text-slate-500 block mt-0.5">
-                              Exact enforced radius: {radiusM}m
+                              Smaller radius = stricter. 50m is a good default for most lecture halls. Indoor GPS can be &plusmn;15–30m even with Precise Location ON.
                             </span>
                           </div>
 
@@ -852,7 +933,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                   Session Ready!
                 </h3>
                 <p className="text-xs text-slate-500 mb-6 max-w-sm mx-auto">
-                  Static high-entropy token generated. Launch Classroom Projector view to display the QR code.
+                  Session created. Launch Classroom Projector view to display the live QR code.
                 </p>
 
                 <div className="flex flex-col gap-3">

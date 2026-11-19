@@ -100,6 +100,8 @@ export interface LectureSession {
   longitude?: number | null;
   radius_m?: number;
   location_name?: string | null;
+  test_mode?: boolean;
+  test_mode_expires_at?: string | null;
 }
 
 export interface AttendanceRecord {
@@ -127,6 +129,8 @@ export interface AttendanceRecord {
   proxy_risk?: ProxyRiskLevel;
   fingerprint_snapshot_ref?: string;
   device_id?: string;
+  final_status?: 'verified' | 'partial' | 'rejected' | null;
+  is_shared_device?: boolean;
 }
 
 export interface DeviceEvent {

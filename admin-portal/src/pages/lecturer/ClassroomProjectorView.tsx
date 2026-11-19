@@ -18,6 +18,10 @@ import { formatWATTime } from '../../lib/dateUtils';
 import { getStudentPwaUrl } from '../../lib/studentPwaUrl';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 
+const SUPABASE_URL = (import.meta as any).env?.VITE_SUPABASE_URL || '';
+const QR_BACKOFF_MS = [5000, 10000, 20000, 30000];
+const QR_STALE_LIMIT_MS = 90000;
+
 export const ClassroomProjectorView: React.FC = () => {
   const { sessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
@@ -26,6 +30,9 @@ export const ClassroomProjectorView: React.FC = () => {
   const [session, setSession] = useState<LectureSession | null>(null);
   const [loading, setLoading] = useState(true);
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  const [qrStatus, setQrStatus] = useState<'loading' | 'ready' | 'retrying' | 'unavailable'>('loading');
+  const [qrRefreshInSec, setQrRefreshInSec] = useState<number | null>(null);
+  const [qrRetryingInSec, setQrRetryingInSec] = useState<number | null>(null);
   const [attendees, setAttendees] = useState<AttendanceRecord[]>([]);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
@@ -36,6 +43,11 @@ export const ClassroomProjectorView: React.FC = () => {
 
   const previousCountRef = useRef(0);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const lastQrSuccessAtRef = useRef<number | null>(null);
+  const nextQrActionAtRef = useRef<number | null>(null);
+  const backoffStepRef = useRef<number>(0);
+  const qrTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const qrAbortRef = useRef<AbortController | null>(null);
 
   // Subtle check-in chime using Web Audio API
   const playCheckinChime = useCallback(() => {
@@ -97,27 +109,133 @@ export const ClassroomProjectorView: React.FC = () => {
     };
   }, [sessionId, user, navigate]);
 
-  // Generate QR only when the token changes
+  // Poll live rotating QR from get-live-qr every 45s aligned to expires_at
+  const fetchLiveQr = useCallback(async () => {
+    if (!session) return;
+    const isTerminal =
+      session.status === 'closed' ||
+      session.status === 'revoked' ||
+      Date.now() >= new Date(session.expires_at).getTime();
+    if (isTerminal) return;
+
+    if (qrTimerRef.current) {
+      clearTimeout(qrTimerRef.current);
+      qrTimerRef.current = null;
+    }
+    if (qrAbortRef.current) {
+      qrAbortRef.current.abort();
+      qrAbortRef.current = null;
+    }
+
+    const controller = new AbortController();
+    qrAbortRef.current = controller;
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+    try {
+      let accessToken: string | null = null;
+      if (isSupabaseConfigured && supabase) {
+        const { data: authData } = await supabase.auth.getSession();
+        accessToken = authData.session?.access_token || null;
+      }
+
+      if (!accessToken || !SUPABASE_URL) {
+        throw new Error('Missing authentication token or Supabase URL');
+      }
+
+      const response = await fetch(`${SUPABASE_URL}/functions/v1/get-live-qr`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ session_id: session.id }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`get-live-qr failed (${response.status})`);
+      }
+
+      const data = await response.json();
+      if (data?.bucket === undefined || !data?.signature) {
+        throw new Error('Invalid get-live-qr response');
+      }
+
+      const host = getStudentPwaUrl();
+      const token = data.token || session.raw_token || session.id;
+      const qrUrl = `${host}/join/${token}?qt=${encodeURIComponent(String(data.bucket))}&qs=${encodeURIComponent(String(data.signature))}`;
+
+      const url = await QRCode.toDataURL(qrUrl, {
+        errorCorrectionLevel: 'H',
+        margin: 2,
+        scale: 12,
+        color: {
+          dark: '#0f172a',
+          light: '#ffffff',
+        },
+      });
+
+      if (controller.signal.aborted) return;
+
+      backoffStepRef.current = 0;
+      lastQrSuccessAtRef.current = Date.now();
+      setQrDataUrl(url);
+      setQrStatus('ready');
+      setQrRetryingInSec(null);
+
+      const expiresMs = data.expires_at ? new Date(data.expires_at).getTime() : NaN;
+      const delayMs = Number.isFinite(expiresMs)
+        ? Math.min(45000, Math.max(5000, expiresMs - Date.now() - 2000))
+        : 45000;
+
+      nextQrActionAtRef.current = Date.now() + delayMs;
+      setQrRefreshInSec(Math.ceil(delayMs / 1000));
+      qrTimerRef.current = setTimeout(() => {
+        fetchLiveQr();
+      }, delayMs);
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      if (err?.name === 'AbortError' && qrAbortRef.current !== controller) {
+        return;
+      }
+
+      const ageMs = lastQrSuccessAtRef.current ? Date.now() - lastQrSuccessAtRef.current : Infinity;
+      const retryDelayMs = QR_BACKOFF_MS[Math.min(backoffStepRef.current, QR_BACKOFF_MS.length - 1)];
+      backoffStepRef.current += 1;
+
+      if (ageMs >= QR_STALE_LIMIT_MS) {
+        setQrDataUrl('');
+        setQrStatus('unavailable');
+      } else {
+        setQrStatus('retrying');
+      }
+
+      setQrRefreshInSec(null);
+      setQrRetryingInSec(Math.ceil(retryDelayMs / 1000));
+      nextQrActionAtRef.current = Date.now() + retryDelayMs;
+      qrTimerRef.current = setTimeout(() => {
+        fetchLiveQr();
+      }, retryDelayMs);
+    }
+  }, [session]);
+
   useEffect(() => {
     if (!session) return;
+    fetchLiveQr();
 
-    const host = getStudentPwaUrl();
-    const token = session.raw_token || session.id;
-    const hasLoc = session.latitude != null && session.longitude != null;
-    const joinUrl = `${host}/join/${token}?loc=${hasLoc ? '1' : '0'}`;
-
-    QRCode.toDataURL(joinUrl, {
-      errorCorrectionLevel: 'H',
-      margin: 2,
-      scale: 12,
-      color: {
-        dark: '#0f172a',
-        light: '#ffffff',
-      },
-    })
-      .then(url => setQrDataUrl(url))
-      .catch(err => console.error('Failed to generate QR code:', err));
-  }, [session?.raw_token, session?.id, session?.latitude, session?.longitude]);
+    return () => {
+      if (qrTimerRef.current) {
+        clearTimeout(qrTimerRef.current);
+        qrTimerRef.current = null;
+      }
+      if (qrAbortRef.current) {
+        qrAbortRef.current.abort();
+        qrAbortRef.current = null;
+      }
+    };
+  }, [fetchLiveQr, session]);
 
   // Poll attendance records every 5s and subscribe via Supabase Realtime
   useEffect(() => {
@@ -206,13 +324,30 @@ export const ClassroomProjectorView: React.FC = () => {
           const secs = String(diffSec % 60).padStart(2, '0');
           setTimeRemaining(`${hrs}:${mins}:${secs}`);
         }
+        if (nextQrActionAtRef.current) {
+          const secsLeft = Math.max(0, Math.ceil((nextQrActionAtRef.current - Date.now()) / 1000));
+          if (qrStatus === 'ready') {
+            setQrRefreshInSec(secsLeft);
+          } else if (qrStatus === 'retrying' || qrStatus === 'unavailable') {
+            setQrRetryingInSec(secsLeft);
+          }
+        }
+
+        if (
+          qrStatus === 'retrying' &&
+          lastQrSuccessAtRef.current &&
+          Date.now() - lastQrSuccessAtRef.current >= QR_STALE_LIMIT_MS
+        ) {
+          setQrDataUrl('');
+          setQrStatus('unavailable');
+        }
       } catch {}
     };
 
     updateTime();
     const timer = setInterval(updateTime, 1000);
     return () => clearInterval(timer);
-  }, [session]);
+  }, [session, qrStatus]);
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
@@ -430,13 +565,29 @@ export const ClassroomProjectorView: React.FC = () => {
                 {session.title}
               </h1>
               <p className="text-xs text-slate-500 mt-1">
-                Scan with your phone camera or open the link below
+                {session.test_mode
+                  ? 'Scan with your phone camera or open the link below'
+                  : 'Scan the live QR code with your phone camera'}
               </p>
             </div>
 
             {/* QR Code */}
             <div className="relative w-full max-w-[240px] sm:max-w-[320px] aspect-square mx-auto my-2 p-2.5 bg-white rounded-xl border border-slate-200/80 flex items-center justify-center">
-              {qrDataUrl ? (
+              {qrStatus === 'unavailable' ? (
+                <div className="w-full h-full flex flex-col items-center justify-center bg-slate-50 text-slate-700 rounded-lg p-4 text-center gap-3">
+                  <p className="text-xs font-medium leading-relaxed">
+                    QR unavailable. Check your connection. Students cannot check in until the QR is restored.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => fetchLiveQr()}
+                    className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Refresh now</span>
+                  </button>
+                </div>
+              ) : qrDataUrl ? (
                 <img
                   src={qrDataUrl}
                   alt="Attendance QR Code"
@@ -465,25 +616,60 @@ export const ClassroomProjectorView: React.FC = () => {
               )}
             </div>
 
-            {/* Direct Link & Copy Control */}
-            <div className="mt-5 pt-4 border-t border-slate-100">
-              <div className="flex items-center gap-2 bg-slate-50 border border-slate-200/90 rounded-xl p-1.5 pl-3">
-                <span className="text-xs font-mono text-slate-600 truncate flex-1 select-all">
-                  {joinUrl}
+            {/* Live QR Refresh & Session End Metadata */}
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+              <span>
+                {qrStatus === 'ready' && qrRefreshInSec !== null
+                  ? `Refreshes in ${qrRefreshInSec}s`
+                  : qrStatus === 'loading'
+                  ? 'Loading live QR…'
+                  : qrStatus === 'retrying'
+                  ? 'Connection interrupted'
+                  : 'QR offline'}
+              </span>
+              <span>Session ends at {formatWATTime(session.expires_at)}</span>
+            </div>
+
+            {/* Minor 4 Network Failure Fallback Notice (< 90s) */}
+            {qrStatus === 'retrying' && sessionState !== 'expired' && sessionState !== 'closed' && (
+              <div className="mt-3 p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center justify-between gap-2">
+                <span>
+                  Refreshing QR… retrying in {qrRetryingInSec ?? 5}s
                 </span>
                 <button
-                  onClick={handleCopyLink}
-                  className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-medium text-xs flex items-center gap-1.5 transition-colors shrink-0 cursor-pointer"
+                  type="button"
+                  onClick={() => fetchLiveQr()}
+                  className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium shrink-0 transition-colors cursor-pointer"
                 >
-                  {copied ? (
-                    <Check className="w-3.5 h-3.5 text-emerald-400 stroke-[2]" />
-                  ) : (
-                    <Copy className="w-3.5 h-3.5 stroke-[1.75]" />
-                  )}
-                  <span>{copied ? 'Copied' : 'Copy link'}</span>
+                  Refresh now
                 </button>
               </div>
-            </div>
+            )}
+
+            {/* Direct Link & Copy Control — ONLY shown in test_mode */}
+            {session.test_mode && (
+              <div className="mt-5 pt-4 border-t border-slate-100 space-y-2.5">
+                <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-medium">
+                  TEST MODE — Copy link enabled, do not use in live class
+                </div>
+                <div className="flex items-center gap-2 bg-slate-50 border border-slate-200/90 rounded-xl p-1.5 pl-3">
+                  <span className="text-xs font-mono text-slate-600 truncate flex-1 select-all">
+                    {joinUrl}
+                  </span>
+                  <button
+                    onClick={handleCopyLink}
+                    className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-medium text-xs flex items-center gap-1.5 transition-colors shrink-0 cursor-pointer"
+                  >
+                    {copied ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-400 stroke-[2]" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5 stroke-[1.75]" />
+                    )}
+                    <span>{copied ? 'Copied' : 'Copy link'}</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -532,22 +718,44 @@ export const ClassroomProjectorView: React.FC = () => {
                     className="py-3 flex items-center justify-between gap-3"
                   >
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-slate-100 truncate">
-                        {item.student_name}
-                      </p>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <p className="text-sm font-medium text-slate-100 truncate">
+                          {item.student_name}
+                        </p>
+                        {item.is_shared_device && (
+                          <span className="px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[10px] font-medium shrink-0">
+                            Shared device
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs font-mono text-slate-400 truncate mt-0.5">
                         {item.matric_no}
                       </p>
                     </div>
 
                     <div className="flex flex-col items-end shrink-0">
-                      <span
-                        className={`text-xs font-medium ${
-                          item.status === 'present' ? 'text-emerald-400' : 'text-amber-400'
-                        }`}
-                      >
-                        {item.status === 'present' ? 'Present' : 'Late'}
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        {item.final_status && (
+                          <span
+                            className={`text-[10px] font-medium capitalize ${
+                              item.final_status === 'verified'
+                                ? 'text-emerald-400'
+                                : item.final_status === 'partial'
+                                ? 'text-amber-300'
+                                : 'text-rose-400'
+                            }`}
+                          >
+                            {item.final_status}
+                          </span>
+                        )}
+                        <span
+                          className={`text-xs font-medium ${
+                            item.status === 'present' ? 'text-emerald-400' : 'text-amber-400'
+                          }`}
+                        >
+                          {item.status === 'present' ? 'Present' : 'Late'}
+                        </span>
+                      </div>
                       <span className="text-[11px] font-mono tabular-nums text-slate-500 mt-0.5">
                         {formatWATTime(item.signed_at)}
                       </span>

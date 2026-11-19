@@ -3,12 +3,14 @@
  *
  * Uses navigator.geolocation.watchPosition with { enableHighAccuracy: true, maximumAge: 0 }
  * to actively wake up the device's hardware GNSS receiver, discard stale OS-cached fixes,
- * reject coarse cell/Wi-Fi guesses (> 65m) and mock-GPS anomalies, detect impossible
+ * reject coarse cell/Wi-Fi guesses (> 120m) and mock-GPS anomalies, detect impossible
  * teleportation jumps, select the sharpest consistent GNSS cluster, and compute an
  * inverse-variance weighted average coordinate before backend boundary verification.
  */
 
-export const MAX_ALLOWED_ACCURACY_M = 65;
+export const MAX_ALLOWED_ACCURACY_M = 120;
+export const ACCURACY_RETRY_THRESHOLD_M = 60;
+export const ACCURACY_RETRY_TIMEOUT_MS = 10_000;
 export const TARGET_HIGH_ACCURACY_M = 20;
 export const MAX_FIX_AGE_MS = 60_000;
 export const MAX_FUTURE_SKEW_MS = 15_000;
@@ -16,7 +18,7 @@ export const TELEPORT_DISTANCE_M = 100;
 export const TELEPORT_WINDOW_MS = 2_000;
 export const MAX_PLAUSIBLE_SPEED_MPS = 50;
 export const SETTLE_WINDOW_MS = 3_500;
-export const MAX_ACQUISITION_WINDOW_MS = 12_000;
+export const MAX_ACQUISITION_WINDOW_MS = 15_000;
 export const MIN_CONSISTENT_SAMPLES_FAST_LOCK = 2;
 export const MAX_FAST_LOCK_SPREAD_M = 25;
 
@@ -311,9 +313,50 @@ export function selectConsistentClusterAndAverage(
 }
 
 /**
- * Clear student-facing message when phone GNSS cannot meet the <= 65m classroom accuracy gate.
- * Includes tailored OS/browser instructions when accuracy >= 500m (e.g. ±1414m Approximate Location).
+ * Clear student-facing message when phone GNSS cannot meet the <= 120m classroom accuracy gate.
+ * Includes browser-specific Precise Location instructions (Chrome on iOS `CriOS` vs Safari on iOS vs Android Chrome).
  */
+export function getPreciseLocationTroubleshootingSteps(userAgent?: string): {
+  browserLabel: string;
+  instruction: string;
+} {
+  const ua =
+    userAgent ??
+    (typeof navigator !== 'undefined' && typeof navigator.userAgent === 'string'
+      ? navigator.userAgent
+      : '');
+
+  if (/CriOS/i.test(ua)) {
+    return {
+      browserLabel: 'Chrome on iOS',
+      instruction:
+        'iPhone Settings → Privacy & Security → Location Services → Chrome → Precise Location ON',
+    };
+  }
+
+  if (/iP(hone|ad|od)/i.test(ua)) {
+    return {
+      browserLabel: 'Safari on iOS',
+      instruction:
+        'iPhone Settings → Privacy & Security → Location Services → Safari Websites → Precise Location ON',
+    };
+  }
+
+  if (/Android/i.test(ua)) {
+    return {
+      browserLabel: 'Android Chrome',
+      instruction:
+        'Android Chrome: tap the address-bar lock/tune icon → Permissions → Location → Precise',
+    };
+  }
+
+  return {
+    browserLabel: 'Browser Settings',
+    instruction:
+      'iOS: Settings → Privacy & Security → Location Services → Safari Websites / Chrome → Precise Location ON; Android: tap the address-bar lock/tune icon → Permissions → Location → Precise',
+  };
+}
+
 export function formatLowAccuracyMessage(
   measuredAccuracyM?: number | null,
   maxAllowedAccuracyM: number = MAX_ALLOWED_ACCURACY_M
@@ -324,12 +367,13 @@ export function formatLowAccuracyMessage(
     Number.isFinite(measuredAccuracyM) &&
     measuredAccuracyM > 0;
   const accLabel = hasValidAcc ? `±${Math.round(measuredAccuracyM!)}m` : 'too coarse';
+  const { instruction } = getPreciseLocationTroubleshootingSteps();
 
   if (hasValidAcc && measuredAccuracyM! >= 500) {
-    return `GPS signal accuracy is ${accLabel} — must be ±${maxAllowedAccuracyM}m or better to verify inside this hall. Enable Precise Location in your browser/OS settings (iOS: Settings → Privacy & Security → Location Services → Safari Websites → Precise Location ON; Android: tap the address-bar lock/tune icon → Permissions → Location → Precise), move near a window, then retry.`;
+    return `GPS signal accuracy is ${accLabel} — must be ±${maxAllowedAccuracyM}m or better to verify inside this hall. Enable Precise Location in your browser/OS settings (${instruction}), move near a window, then retry.`;
   }
 
-  return `GPS signal accuracy is ${accLabel} — must be ±${maxAllowedAccuracyM}m or better to verify inside this hall. Move near a window or turn on Precise Location & Wi-Fi scanning, then retry.`;
+  return `GPS signal accuracy is ${accLabel} — must be ±${maxAllowedAccuracyM}m or better to verify inside this hall. Enable Precise Location (${instruction}) and move near a window, then retry.`;
 }
 
 /**
@@ -550,4 +594,45 @@ export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Pr
       finishReject(e?.message || 'Could not start GPS receiver.', 'GPS_ERROR');
     }
   });
+}
+
+/**
+ * Issue 5: Precision-first GNSS acquisition with automatic 10s retry.
+ * If the initial 15s acquisition returns `60 < accuracy <= 120`, runs one automatic
+ * 10s retry (`timeoutMs: 10000`) and always returns the better (lower `accuracy`)
+ * of the two fixes. If `accuracy <= 60`, returns immediately with no retry.
+ */
+export async function acquireBestFix(
+  options: AcquireLocationOptions = {}
+): Promise<PreciseLocation> {
+  const maxAllowedAccuracyM = options.maxAllowedAccuracyM ?? MAX_ALLOWED_ACCURACY_M;
+  const initialFix = await acquirePreciseLocation({
+    ...options,
+    timeoutMs: options.timeoutMs ?? MAX_ACQUISITION_WINDOW_MS,
+    maxAllowedAccuracyM,
+  });
+
+  if (
+    initialFix.accuracy <= ACCURACY_RETRY_THRESHOLD_M ||
+    initialFix.accuracy > maxAllowedAccuracyM
+  ) {
+    return initialFix;
+  }
+
+  options.onProgress?.({
+    accuracy: initialFix.accuracy,
+    step: `Signal ±${Math.round(initialFix.accuracy)}m — running 10s precision retry...`,
+    sampleCount: initialFix.sampleCount,
+  });
+
+  try {
+    const retryFix = await acquirePreciseLocation({
+      ...options,
+      timeoutMs: ACCURACY_RETRY_TIMEOUT_MS,
+      maxAllowedAccuracyM,
+    });
+    return retryFix.accuracy < initialFix.accuracy ? retryFix : initialFix;
+  } catch {
+    return initialFix;
+  }
 }

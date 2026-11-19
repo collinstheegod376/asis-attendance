@@ -15,6 +15,8 @@ export interface ValidateSessionTokenResponse {
   step: string;
   student_id: string | null;
   location_enabled?: boolean;
+  qr_verified?: boolean;
+  test_mode?: boolean;
 }
 
 export interface LookupMatricResponse {
@@ -72,7 +74,15 @@ export const attendanceService = {
    * Validates raw QR session token and returns check-in attempt details.
    * Can accept optional existing attempt token for attempt reuse (Fixes SEC-22).
    */
-  async validateSessionToken(token: string, existingAttemptToken?: string): Promise<ValidateSessionTokenResponse> {
+  async validateSessionToken(
+    token: string,
+    existingAttemptToken?: string,
+    options?: {
+      qrBucket?: number;
+      qrSig?: string;
+      deviceHash?: string;
+    }
+  ): Promise<ValidateSessionTokenResponse> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
@@ -84,7 +94,13 @@ export const attendanceService = {
       method: 'POST',
       headers,
       credentials: 'include',
-      body: JSON.stringify({ token: token.trim(), attempt_token: existingAttemptToken }),
+      body: JSON.stringify({
+        token: token.trim(),
+        attempt_token: existingAttemptToken,
+        ...(options?.qrBucket !== undefined ? { qr_bucket: options.qrBucket } : {}),
+        ...(options?.qrSig ? { qr_sig: options.qrSig } : {}),
+        ...(options?.deviceHash ? { device_hash: options.deviceHash } : {}),
+      }),
     });
 
     const json = await res.json().catch(() => ({}));
@@ -279,6 +295,7 @@ export const attendanceService = {
     fingerprintHash: string;
     deviceInfo: Record<string, unknown>;
     idempotencyKey?: string;
+    deviceHash?: string;
   }): Promise<SubmitAttendanceResponse> {
     const res = await fetch('/api/submit-attendance', {
       method: 'POST',
@@ -293,6 +310,7 @@ export const attendanceService = {
         fingerprint_hash: params.fingerprintHash,
         device_info: params.deviceInfo,
         idempotency_key: params.idempotencyKey,
+        ...(params.deviceHash ? { device_hash: params.deviceHash } : {}),
       }),
     });
 

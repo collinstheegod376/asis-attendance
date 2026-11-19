@@ -203,9 +203,12 @@ Deno.serve(async (req: Request) => {
             errCode === 'LOCATION_MISSING' ||
             errCode === 'INVALID_ACCURACY' ||
             errCode === 'INVALID_STEP' ||
-            errCode === 'SESSION_CLOSED'
+            errCode === 'SESSION_CLOSED' ||
+            errCode === 'LIVE_QR_REQUIRED'
           ? 403
-          : errCode === 'ATTEMPT_EXPIRED' || errCode === 'SESSION_EXPIRED'
+          : errCode === 'ATTEMPT_EXPIRED' ||
+            errCode === 'SESSION_EXPIRED' ||
+            errCode === 'SESSION_ENDED'
           ? 410
           : 400;
 

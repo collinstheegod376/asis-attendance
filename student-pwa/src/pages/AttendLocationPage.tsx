@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MapPin, CheckCircle2, AlertTriangle, RefreshCw, ArrowRight, ShieldCheck } from 'lucide-react';
+import { MapPin, CheckCircle2, AlertTriangle, RefreshCw, ArrowRight, ShieldCheck, ChevronDown } from 'lucide-react';
 import { Header } from '../components/Header';
 import {
   getAttemptState,
@@ -10,8 +10,11 @@ import {
   isLocationRequirementSatisfied,
 } from '../lib/attemptState';
 import { attendanceService, ApiError } from '../lib/attendanceService';
+import { heartbeatManager } from '../lib/heartbeatManager';
 import {
   MAX_ALLOWED_ACCURACY_M,
+  ACCURACY_RETRY_THRESHOLD_M,
+  ACCURACY_RETRY_TIMEOUT_MS,
   TARGET_HIGH_ACCURACY_M,
   SETTLE_WINDOW_MS,
   MAX_ACQUISITION_WINDOW_MS,
@@ -23,6 +26,7 @@ import {
   detectTeleportationJump,
   selectConsistentClusterAndAverage,
   formatLowAccuracyMessage,
+  acquirePreciseLocation,
 } from '../lib/preciseLocation';
 import type { GpsFix, PreciseLocation } from '../lib/preciseLocation';
 
@@ -123,6 +127,7 @@ export const AttendLocationPage: React.FC = () => {
     let settleWindowElapsed = false;
     let searchWindowClosed = false;
     let verifyAttemptsCount = 0;
+    let hasRunAccuracyRetry = false;
 
     const cleanup = () => {
       cancelled = true;
@@ -330,6 +335,7 @@ export const AttendLocationPage: React.FC = () => {
             verified_at: new Date().toISOString(),
             inside_boundary: true,
           });
+          heartbeatManager.start();
           setVerifiedSuccess(true);
           setLoading(false);
           return;
@@ -348,7 +354,7 @@ export const AttendLocationPage: React.FC = () => {
           navigate('/expired', { replace: true });
           return;
         }
-        if (errCode === 'SESSION_CLOSED') {
+        if (errCode === 'SESSION_CLOSED' || errCode === 'SESSION_ENDED') {
           cleanup();
           clearAttemptState();
           navigate('/closed', { replace: true });
@@ -378,7 +384,7 @@ export const AttendLocationPage: React.FC = () => {
             navigate('/expired', { replace: true });
             return;
           }
-          if (err.code === 'SESSION_CLOSED') {
+          if (err.code === 'SESSION_CLOSED' || err.code === 'SESSION_ENDED') {
             cleanup();
             clearAttemptState();
             navigate('/closed', { replace: true });
@@ -481,12 +487,54 @@ export const AttendLocationPage: React.FC = () => {
       }
     }, SETTLE_WINDOW_MS);
 
-    // 2. Maximum acquisition window timer (12s): submits final valid <= 65m cluster or fails locally with exact diagnostics
+    // 2. Maximum acquisition window timer (15s): runs Issue 5 10s retry if 60 < accuracy <= 120, or verifies/fails
     searchWindowTimer = setTimeout(() => {
       if (cancelled || !isMountedRef.current) return;
       searchWindowClosed = true;
 
       if (verificationInFlight) {
+        return;
+      }
+
+      if (
+        bestClusteredFix &&
+        bestClusteredFix.accuracy > ACCURACY_RETRY_THRESHOLD_M &&
+        bestClusteredFix.accuracy <= MAX_ALLOWED_ACCURACY_M &&
+        !hasRunAccuracyRetry
+      ) {
+        hasRunAccuracyRetry = true;
+        const initialFix = bestClusteredFix;
+        if (watchId !== null) {
+          navigator.geolocation.clearWatch(watchId);
+          watchId = null;
+        }
+        setGpsProgressStep(
+          `Signal ±${Math.round(initialFix.accuracy)}m — running 10s precision retry...`
+        );
+        void acquirePreciseLocation({
+          timeoutMs: ACCURACY_RETRY_TIMEOUT_MS,
+          maxAllowedAccuracyM: MAX_ALLOWED_ACCURACY_M,
+          onProgress: (p) => {
+            if (!cancelled && isMountedRef.current) {
+              setLiveAccuracy(p.accuracy);
+              setGpsProgressStep(p.step);
+            }
+          },
+        })
+          .then((retryFix) => {
+            if (cancelled || !isMountedRef.current) return;
+            const betterFix = retryFix.accuracy < initialFix.accuracy ? retryFix : initialFix;
+            bestClusteredFix = betterFix;
+            void verifyFixWithBackend(betterFix, true);
+          })
+          .catch(() => {
+            if (cancelled || !isMountedRef.current) return;
+            if (lastFailure) {
+              renderFinalFailure(lastFailure, initialFix);
+            } else {
+              void verifyFixWithBackend(initialFix, true);
+            }
+          });
         return;
       }
 
@@ -851,6 +899,24 @@ export const AttendLocationPage: React.FC = () => {
                 <RefreshCw className="w-3.5 h-3.5" />
                 <span>High-Precision GPS Retry</span>
               </button>
+
+              <details className="bg-white/90 border border-red-200/80 rounded-xl p-2.5 text-left group">
+                <summary className="cursor-pointer list-none flex items-center justify-between text-[11px] font-bold text-slate-800 select-none">
+                  <span>Troubleshooting: Precise Location</span>
+                  <ChevronDown className="w-3.5 h-3.5 text-slate-500 transition-transform group-open:rotate-180" />
+                </summary>
+                <ul className="mt-2 space-y-1.5 text-[11px] text-slate-700 leading-snug">
+                  <li>
+                    <strong className="text-slate-900">iOS Safari:</strong> Settings → Privacy &amp; Security → Location Services → Safari Websites → Precise Location ON
+                  </li>
+                  <li>
+                    <strong className="text-slate-900">Chrome on iOS:</strong> Settings → Privacy &amp; Security → Location Services → Chrome → Precise Location ON
+                  </li>
+                  <li>
+                    <strong className="text-slate-900">Android Chrome:</strong> Tap the address-bar lock/tune icon → Permissions → Location → Precise
+                  </li>
+                </ul>
+              </details>
             </div>
           )}
 

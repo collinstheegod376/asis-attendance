@@ -1,14 +1,15 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { RefreshCw, ShieldAlert } from 'lucide-react';
 import { AdunLogo } from '../components/AdunLogo';
 import { attendanceService, ApiError } from '../lib/attendanceService';
 import { getAttemptState, initAttemptState, clearAttemptState } from '../lib/attemptState';
-import { detectIncognito } from '../lib/deviceFingerprint';
+import { detectIncognito, getDeviceHash } from '../lib/deviceFingerprint';
 import { resolveLocationEnabled } from '../lib/preciseLocation';
 
 export const JoinTokenPage: React.FC = () => {
   const { token } = useParams<{ token: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -83,7 +84,20 @@ export const JoinTokenPage: React.FC = () => {
             ? existingAttempt.attempt_token
             : undefined;
 
-        const response = await attendanceService.validateSessionToken(cleanToken, reuseAttemptToken);
+        const qtRaw = searchParams.get('qt');
+        const qsRaw = searchParams.get('qs');
+        const qrBucket =
+          qtRaw !== null && qtRaw.trim() !== '' && !Number.isNaN(Number(qtRaw))
+            ? Number(qtRaw)
+            : undefined;
+        const qrSig = qsRaw && qsRaw.trim() ? qsRaw.trim() : undefined;
+        const deviceHash = await getDeviceHash();
+
+        const response = await attendanceService.validateSessionToken(cleanToken, reuseAttemptToken, {
+          qrBucket,
+          qrSig,
+          deviceHash,
+        });
 
         // Strictly trust the authoritative server flag; never allow URL query params (e.g. ?loc=0) to bypass location verification
         const isLocationEnabled = resolveLocationEnabled(response.location_enabled);
@@ -102,8 +116,13 @@ export const JoinTokenPage: React.FC = () => {
             expires_at: response.expires_at,
             grace_minutes: 15,
             location_enabled: isLocationEnabled,
+            test_mode: response.test_mode,
           },
-          existingAttempt?.idempotency_key
+          existingAttempt?.idempotency_key,
+          {
+            qr_verified: response.qr_verified,
+            test_mode: response.test_mode,
+          }
         );
 
         // Proceed directly to identity step
@@ -134,6 +153,14 @@ export const JoinTokenPage: React.FC = () => {
           if (err.status === 425 || err.code === 'SESSION_NOT_STARTED') {
             clearAttemptState();
             navigate('/not-started', { replace: true });
+            return;
+          }
+
+          if (err.code === 'LIVE_QR_REQUIRED') {
+            clearAttemptState();
+            setErrorMsg(
+              'Please scan the live QR code on the projector screen. Links shared via WhatsApp or email will not work in live mode.'
+            );
             return;
           }
 

@@ -406,6 +406,8 @@ export class LecturerService {
           longitude: s.longitude,
           radius_m: s.radius_m,
           location_name: s.location_name,
+          test_mode: Boolean(s.test_mode),
+          test_mode_expires_at: s.test_mode_expires_at ?? null,
         };
       });
     } catch (e) {
@@ -467,6 +469,8 @@ export class LecturerService {
         longitude: s.longitude,
         radius_m: s.radius_m,
         location_name: s.location_name,
+        test_mode: Boolean(s.test_mode),
+        test_mode_expires_at: s.test_mode_expires_at ?? null,
       }));
     } catch (e) {
       console.error('getLecturerRecentSessions exception:', e);
@@ -514,6 +518,8 @@ export class LecturerService {
         longitude: s.longitude,
         radius_m: s.radius_m,
         location_name: s.location_name,
+        test_mode: Boolean(s.test_mode),
+        test_mode_expires_at: s.test_mode_expires_at ?? null,
       };
     } catch (e) {
       console.error('getSessionById exception:', e);
@@ -532,6 +538,8 @@ export class LecturerService {
       longitude?: number | null;
       radius_m?: number;
       location_name?: string | null;
+      test_mode?: boolean;
+      test_mode_expires_at?: string | null;
     },
     actor: { id: string; name: string }
   ): Promise<{ success: boolean; error?: string; session?: LectureSession; rawToken?: string }> {
@@ -629,6 +637,10 @@ export class LecturerService {
       // High entropy raw token (pre-image) and token hash
       const rawToken = generateHighEntropyToken();
       const tokenHash = await sha256Hex(rawToken);
+      const testMode = Boolean(data.test_mode);
+      const testModeExpiresAt = testMode
+        ? data.test_mode_expires_at || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+        : null;
 
       const { data: inserted, error: insertErr } = await supabase
         .from('lecture_sessions')
@@ -645,6 +657,8 @@ export class LecturerService {
           longitude: validLng,
           radius_m: validRadius ?? 50.0,
           location_name: validLat !== null && data.location_name ? data.location_name.trim() : null,
+          test_mode: testMode,
+          test_mode_expires_at: testModeExpiresAt,
         })
         .select()
         .single();
@@ -694,6 +708,8 @@ export class LecturerService {
         longitude: inserted.longitude,
         radius_m: inserted.radius_m,
         location_name: inserted.location_name,
+        test_mode: Boolean(inserted.test_mode ?? testMode),
+        test_mode_expires_at: inserted.test_mode_expires_at ?? testModeExpiresAt,
       };
 
       return {
@@ -772,6 +788,16 @@ export class LecturerService {
         entity: 'lecture_sessions',
         entity_id: sessionId,
       });
+
+      // Immediately finalize attendance final_status via Edge Function (authenticated JWT)
+      try {
+        const finalizeRes = await callEdgeFunction('finalize-session', { session_id: sessionId });
+        if (!finalizeRes.success) {
+          console.warn('finalize-session warning:', finalizeRes.error);
+        }
+      } catch (finalizeErr) {
+        console.warn('finalize-session call failed:', finalizeErr);
+      }
 
       return { success: true };
     } catch (err) {
@@ -945,19 +971,50 @@ export class LecturerService {
     if (!isSupabaseConfigured || !supabase) return [];
 
     try {
-      const { data, error } = await supabase
-        .from('attendance_records')
-        .select('*, students_master(matric_no, surname, first_name, middle_name)')
-        .eq('session_id', sessionId)
-        .order('signed_at', { ascending: false });
+      const [recordsRes, collisionsRes] = await Promise.all([
+        supabase
+          .from('attendance_records')
+          .select('*, students_master(matric_no, surname, first_name, middle_name)')
+          .eq('session_id', sessionId)
+          .order('signed_at', { ascending: false }),
+        Promise.resolve(
+          supabase
+            .from('v_device_hash_collisions')
+            .select('*')
+            .eq('session_id', sessionId)
+        ).catch(() => ({ data: null, error: null })),
+      ]);
 
+      const { data, error } = recordsRes;
       if (error || !data) return [];
+
+      const collisions: any[] = (!collisionsRes.error && Array.isArray(collisionsRes.data))
+        ? collisionsRes.data
+        : [];
+
+      const flaggedStudentIds = new Set<string>();
+      const flaggedRecordIds = new Set<string>();
+      const flaggedHashes = new Set<string>();
+
+      for (const c of collisions) {
+        if (c.student_id) flaggedStudentIds.add(String(c.student_id));
+        if (c.attendance_record_id) flaggedRecordIds.add(String(c.attendance_record_id));
+        if (c.device_fingerprint_hash) flaggedHashes.add(String(c.device_fingerprint_hash));
+        if (Array.isArray(c.student_ids)) {
+          for (const sid of c.student_ids) flaggedStudentIds.add(String(sid));
+        }
+      }
 
       return data.map((r: any) => {
         const s = r.students_master;
         const studentName = s
           ? `${s.surname} ${s.first_name} ${s.middle_name || ''}`.trim()
           : 'Enrolled Student';
+
+        const isSharedDevice =
+          flaggedRecordIds.has(String(r.id)) ||
+          flaggedStudentIds.has(String(r.student_id)) ||
+          (r.device_fingerprint_hash && flaggedHashes.has(String(r.device_fingerprint_hash)));
 
         return {
           id: r.id,
@@ -975,6 +1032,8 @@ export class LecturerService {
           verification_status: r.verification_status,
           receipt_id: r.receipt_id,
           proxy_risk: r.proxy_risk,
+          final_status: r.final_status ?? null,
+          is_shared_device: Boolean(isSharedDevice),
         };
       });
     } catch (e) {

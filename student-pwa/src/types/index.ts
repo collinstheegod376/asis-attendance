@@ -12,6 +12,7 @@ export interface SessionData {
   expires_at: string;
   grace_minutes: number;
   location_enabled?: boolean;
+  test_mode?: boolean;
 }
 
 export interface StudentData {
@@ -29,6 +30,9 @@ export interface AttemptSessionState {
   attempt_token: string;
   raw_token: string;
   session_id?: string;
+  expires_at?: string;
+  qr_verified?: boolean;
+  test_mode?: boolean;
   session?: SessionData;
   student?: StudentData;
   idempotency_key?: string;

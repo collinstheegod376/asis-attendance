@@ -33,6 +33,7 @@ if (typeof globalThis.sessionStorage === 'undefined') {
 
 import {
   MAX_ALLOWED_ACCURACY_M,
+  MAX_ACQUISITION_WINDOW_MS,
   MAX_FIX_AGE_MS,
   MAX_FUTURE_SKEW_MS,
   normalizeGpsTimestamp,
@@ -43,6 +44,7 @@ import {
   formatLowAccuracyMessage,
   haversineDistanceMeters,
   acquirePreciseLocation,
+  acquireBestFix,
 } from '../preciseLocation';
 import type { GpsFix } from '../preciseLocation';
 import {
@@ -53,6 +55,8 @@ import {
   isLocationRequirementSatisfied,
 } from '../attemptState';
 import { attendanceService, ApiError } from '../attendanceService';
+import { getDeviceHash } from '../deviceFingerprint';
+import { createHeartbeatManager, HEARTBEAT_INTERVAL_MS } from '../heartbeatManager';
 
 describe('Student PWA High-Accuracy GNSS & Anti-Bypass Security Suite', () => {
   beforeEach(() => {
@@ -84,12 +88,14 @@ describe('Student PWA High-Accuracy GNSS & Anti-Bypass Security Suite', () => {
       expect(joinPageSrc).toContain('resolveLocationEnabled(response.location_enabled)');
     });
 
-    it('LandingPage.tsx strips untrusted query parameters from scanned /join/ QR links', () => {
+    it('LandingPage.tsx preserves qt/qs params while stripping untrusted query parameters from scanned /join/ QR links', () => {
       const landingSrc = fs.readFileSync(
         path.resolve(__dirname, '../../pages/LandingPage.tsx'),
         'utf-8'
       );
-      expect(landingSrc).toContain('split(/[?#]/)');
+      expect(landingSrc).toContain("incoming.get('qt')");
+      expect(landingSrc).toContain("incoming.get('qs')");
+      expect(landingSrc).not.toContain("incoming.get('loc')");
     });
   });
 
@@ -171,12 +177,14 @@ describe('Student PWA High-Accuracy GNSS & Anti-Bypass Security Suite', () => {
       ).toBe('INVALID_COORDINATES');
     });
 
-    it('enforces strict <= 65m accuracy gate and rejects coarse Wi-Fi/cell guesses', () => {
+    it('enforces <= 120m accuracy gate and rejects coarse Wi-Fi/cell guesses', () => {
+      expect(MAX_ALLOWED_ACCURACY_M).toBe(120);
+      expect(MAX_ACQUISITION_WINDOW_MS).toBe(15_000);
       expect(
-        validateGpsFix({ latitude: 6.5244, longitude: 3.3792, accuracy: 65, timestamp: now - 1000 }, now).valid
+        validateGpsFix({ latitude: 6.5244, longitude: 3.3792, accuracy: 120, timestamp: now - 1000 }, now).valid
       ).toBe(true);
       expect(
-        validateGpsFix({ latitude: 6.5244, longitude: 3.3792, accuracy: 65.1, timestamp: now - 1000 }, now).reason
+        validateGpsFix({ latitude: 6.5244, longitude: 3.3792, accuracy: 120.1, timestamp: now - 1000 }, now).reason
       ).toBe('COARSE_ACCURACY');
       expect(
         validateGpsFix({ latitude: 6.5244, longitude: 3.3792, accuracy: 250, timestamp: now - 1000 }, now).reason
@@ -252,18 +260,18 @@ describe('Student PWA High-Accuracy GNSS & Anti-Bypass Security Suite', () => {
       expect(fetchSpy).not.toHaveBeenCalled();
     });
 
-    it('formatLowAccuracyMessage gives clear ±Xm vs ±65m actionable guidance including OS Precise Location steps for >= 500m', () => {
+    it('formatLowAccuracyMessage gives clear ±Xm vs ±120m actionable guidance including OS Precise Location steps for >= 500m', () => {
       const msg = formatLowAccuracyMessage(214.6, MAX_ALLOWED_ACCURACY_M);
       expect(msg).toContain('±215m');
-      expect(msg).toContain('±65m');
+      expect(msg).toContain('±120m');
       expect(msg.toLowerCase()).toContain('window');
       expect(msg.toLowerCase()).toContain('precise location');
 
       const approxMsg = formatLowAccuracyMessage(1414.2, MAX_ALLOWED_ACCURACY_M);
       expect(approxMsg).toContain('±1414m');
-      expect(approxMsg).toContain('±65m');
+      expect(approxMsg).toContain('±120m');
       expect(approxMsg).toContain('Precise Location');
-      expect(approxMsg).toContain('iOS: Settings');
+      expect(approxMsg).toContain('iOS:');
       expect(approxMsg).toContain('Android:');
     });
   });
@@ -492,7 +500,7 @@ describe('Student PWA High-Accuracy GNSS & Anti-Bypass Security Suite', () => {
       expect(clearWatch).toHaveBeenCalledWith(7);
     });
 
-    it('rejects with LOW_ACCURACY after timeout if phone only achieves > 65m accuracy', async () => {
+    it('rejects with LOW_ACCURACY after timeout if phone only achieves > 120m accuracy', async () => {
       vi.useFakeTimers();
       const baseNow = 1_700_000_000_000;
       vi.setSystemTime(baseNow);
@@ -509,20 +517,271 @@ describe('Student PWA High-Accuracy GNSS & Anti-Bypass Security Suite', () => {
         configurable: true,
       });
 
-      const promise = acquirePreciseLocation({ timeoutMs: 12_000 });
+      const promise = acquirePreciseLocation({ timeoutMs: 15_000 });
 
       watchCallback!({
         coords: { latitude: 6.5244, longitude: 3.3792, accuracy: 185 } as GeolocationCoordinates,
         timestamp: baseNow,
       } as GeolocationPosition);
 
-      vi.advanceTimersByTime(12_000);
+      vi.advanceTimersByTime(15_000);
 
       await expect(promise).rejects.toMatchObject({
         code: 'LOW_ACCURACY',
         accuracyM: 185,
       });
       expect(clearWatch).toHaveBeenCalledWith(9);
+    });
+  });
+
+  describe('6. Issue 5 acquireBestFix() Two-Fix Selection', () => {
+    it('keeps the better (70m) fix when retry returns 110m', async () => {
+      vi.useFakeTimers();
+      const baseNow = 1_700_000_000_000;
+      vi.setSystemTime(baseNow);
+
+      let callCount = 0;
+      const clearWatch = vi.fn();
+      const watchPosition = vi.fn((cb: PositionCallback) => {
+        callCount += 1;
+        const currentCall = callCount;
+        setTimeout(() => {
+          cb({
+            coords: {
+              latitude: 6.5244,
+              longitude: 3.3792,
+              accuracy: currentCall === 1 ? 70 : 110,
+            } as GeolocationCoordinates,
+            timestamp: Date.now(),
+          } as GeolocationPosition);
+        }, 100);
+        return currentCall;
+      });
+
+      Object.defineProperty(globalThis, 'navigator', {
+        value: { geolocation: { watchPosition, clearWatch } },
+        configurable: true,
+      });
+
+      const promise = acquireBestFix();
+      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const fix = await promise;
+      expect(watchPosition).toHaveBeenCalledTimes(2);
+      expect(fix.accuracy).toBe(70);
+    });
+
+    it('takes the sharper (45m) retry fix when initial fix is 70m', async () => {
+      vi.useFakeTimers();
+      const baseNow = 1_700_000_000_000;
+      vi.setSystemTime(baseNow);
+
+      let callCount = 0;
+      const clearWatch = vi.fn();
+      const watchPosition = vi.fn((cb: PositionCallback) => {
+        callCount += 1;
+        const currentCall = callCount;
+        setTimeout(() => {
+          cb({
+            coords: {
+              latitude: 6.5244,
+              longitude: 3.3792,
+              accuracy: currentCall === 1 ? 70 : 45,
+            } as GeolocationCoordinates,
+            timestamp: Date.now(),
+          } as GeolocationPosition);
+        }, 100);
+        return currentCall;
+      });
+
+      Object.defineProperty(globalThis, 'navigator', {
+        value: { geolocation: { watchPosition, clearWatch } },
+        configurable: true,
+      });
+
+      const promise = acquireBestFix();
+      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const fix = await promise;
+      expect(watchPosition).toHaveBeenCalledTimes(2);
+      expect(fix.accuracy).toBe(45);
+    });
+
+    it('returns immediately with no retry when initial fix is <= 60m (e.g. 30m)', async () => {
+      vi.useFakeTimers();
+      const baseNow = 1_700_000_000_000;
+      vi.setSystemTime(baseNow);
+
+      const clearWatch = vi.fn();
+      const watchPosition = vi.fn((cb: PositionCallback) => {
+        setTimeout(() => {
+          cb({
+            coords: { latitude: 6.5244, longitude: 3.3792, accuracy: 30 } as GeolocationCoordinates,
+            timestamp: Date.now(),
+          } as GeolocationPosition);
+        }, 100);
+        return 1;
+      });
+
+      Object.defineProperty(globalThis, 'navigator', {
+        value: { geolocation: { watchPosition, clearWatch } },
+        configurable: true,
+      });
+
+      const promise = acquireBestFix();
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      const fix = await promise;
+      expect(watchPosition).toHaveBeenCalledTimes(1);
+      expect(fix.accuracy).toBe(30);
+    });
+  });
+
+  describe('7. HeartbeatManager (Issue 6 & User Decision A2)', () => {
+    it('does not start and fires 0 heartbeats if session is already expired', async () => {
+      vi.useFakeTimers();
+      const baseNow = 1_700_000_000_000;
+      vi.setSystemTime(baseNow);
+      const fetchSpy = vi.fn();
+      global.fetch = fetchSpy;
+
+      initAttemptState('tok', 'aid', 'atok', {
+        id: 'sid',
+        title: 'CSC 301',
+        course_code: 'CSC 301',
+        course_title: 'OS',
+        starts_at: new Date(baseNow - 600_000).toISOString(),
+        expires_at: new Date(baseNow - 1_000).toISOString(),
+        grace_minutes: 15,
+        location_enabled: true,
+      });
+
+      const mgr = createHeartbeatManager();
+      expect(mgr.start()).toBe(false);
+      await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS * 2);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('stops automatically when expires_at is reached and when SESSION_ENDED is returned', async () => {
+      vi.useFakeTimers();
+      const baseNow = 1_700_000_000_000;
+      vi.setSystemTime(baseNow);
+
+      const fetchSpy = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({ inside_fence: true }),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 410,
+          json: async () => ({ error: 'SESSION_ENDED' }),
+        });
+      global.fetch = fetchSpy;
+
+      initAttemptState('tok', 'aid', 'atok', {
+        id: 'sid',
+        title: 'CSC 301',
+        course_code: 'CSC 301',
+        course_title: 'OS',
+        starts_at: new Date(baseNow).toISOString(),
+        expires_at: new Date(baseNow + HEARTBEAT_INTERVAL_MS * 3).toISOString(),
+        grace_minutes: 15,
+        location_enabled: true,
+      });
+
+      const mgr = createHeartbeatManager();
+      expect(mgr.start()).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(mgr.getStatus().active).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(mgr.getStatus().active).toBe(false);
+      expect(mgr.getStatus().sessionEnded).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('queues failed_events on network error (max 2 retries) and flushes them on next successful heartbeat', async () => {
+      vi.useFakeTimers();
+      const baseNow = 1_700_000_000_000;
+      vi.setSystemTime(baseNow);
+
+      const fetchSpy = vi
+        .fn()
+        // First tick: 1 initial + 2 retries all fail
+        .mockRejectedValueOnce(new Error('Network down'))
+        .mockRejectedValueOnce(new Error('Network down'))
+        .mockRejectedValueOnce(new Error('Network down'))
+        // Second tick: succeeds
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({ inside_fence: false }),
+        });
+      global.fetch = fetchSpy;
+
+      initAttemptState('tok', 'aid', 'atok', {
+        id: 'sid',
+        title: 'CSC 301',
+        course_code: 'CSC 301',
+        course_title: 'OS',
+        starts_at: new Date(baseNow).toISOString(),
+        expires_at: new Date(baseNow + HEARTBEAT_INTERVAL_MS * 4).toISOString(),
+        grace_minutes: 15,
+        location_enabled: true,
+      });
+
+      const mgr = createHeartbeatManager();
+      mgr.start();
+
+      await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+      expect(fetchSpy).toHaveBeenCalledTimes(3); // 1 + 2 retries
+      expect(mgr.getStatus().failedEventsCount).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+      expect(fetchSpy).toHaveBeenCalledTimes(4);
+      const lastCallBody = JSON.parse(fetchSpy.mock.calls[3][1].body as string);
+      expect(lastCallBody.failed_events).toHaveLength(1);
+      expect(lastCallBody.failed_events[0].type).toBe('heartbeat_failed');
+      expect(mgr.getStatus().failedEventsCount).toBe(0);
+      expect(mgr.getStatus().insideFence).toBe(false);
+    });
+  });
+
+  describe('8. Device Hash Stability & LIVE_QR_REQUIRED Handling', () => {
+    it('getDeviceHash() returns a stable 64-char SHA-256 hex across repeated calls', async () => {
+      const h1 = await getDeviceHash();
+      const h2 = await getDeviceHash();
+      expect(h1).toMatch(/^[a-f0-9]{64}$/);
+      expect(h2).toBe(h1);
+      expect(localStorage.getItem('device_fp_uuid_v1')).toBeTruthy();
+    });
+
+    it('JoinTokenPage.tsx and AttendVideoPage.tsx handle LIVE_QR_REQUIRED cleanly', () => {
+      const joinSrc = fs.readFileSync(
+        path.resolve(__dirname, '../../pages/JoinTokenPage.tsx'),
+        'utf-8'
+      );
+      const videoSrc = fs.readFileSync(
+        path.resolve(__dirname, '../../pages/AttendVideoPage.tsx'),
+        'utf-8'
+      );
+      const expectedMsg =
+        'Please scan the live QR code on the projector screen. Links shared via WhatsApp or email will not work in live mode.';
+
+      expect(joinSrc).toContain('LIVE_QR_REQUIRED');
+      expect(joinSrc).toContain(expectedMsg);
+      expect(videoSrc).toContain('LIVE_QR_REQUIRED');
+      expect(videoSrc).toContain(expectedMsg);
     });
   });
 });

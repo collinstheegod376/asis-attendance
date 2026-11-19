@@ -344,3 +344,80 @@ export async function detectIncognito(): Promise<boolean> {
     return false;
   }
 }
+
+const DEVICE_FP_UUID_KEY = 'device_fp_uuid_v1';
+
+function getOrCreatePersistentFpUuid(): string {
+  try {
+    const storage = typeof localStorage !== 'undefined' ? localStorage : undefined;
+    const existing = storage?.getItem(DEVICE_FP_UUID_KEY);
+    if (existing && existing.trim()) {
+      return existing;
+    }
+    const uuid =
+      typeof globalThis.crypto?.randomUUID === 'function'
+        ? globalThis.crypto.randomUUID()
+        : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+            const r = (Math.random() * 16) | 0;
+            const v = c === 'x' ? r : (r & 0x3) | 0x8;
+            return v.toString(16);
+          });
+    storage?.setItem(DEVICE_FP_UUID_KEY, uuid);
+    return uuid;
+  } catch {
+    return 'ephemeral-fallback';
+  }
+}
+
+/**
+ * Advisory device hash (Gap 6): combines a persistent localStorage UUID
+ * (`device_fp_uuid_v1`) with stable browser/device signals -> SHA-256 hex.
+ */
+export async function getDeviceHash(): Promise<string> {
+  const uuid = getOrCreatePersistentFpUuid();
+  const nav = typeof navigator !== 'undefined' ? navigator : ({} as Partial<Navigator>);
+  const scr =
+    typeof window !== 'undefined' && window.screen
+      ? window.screen
+      : ((globalThis as unknown as { screen?: Screen }).screen ?? ({} as Partial<Screen>));
+  const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+
+  let timeZone = 'unknown';
+  try {
+    timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'unknown';
+  } catch {
+    // ignore
+  }
+
+  const payload = [
+    uuid,
+    nav.userAgent || '',
+    nav.language || '',
+    timeZone,
+    scr.width || 0,
+    scr.height || 0,
+    dpr,
+    nav.hardwareConcurrency || 0,
+    nav.maxTouchPoints || 0,
+  ].join('|');
+
+  try {
+    const subtle = globalThis.crypto?.subtle;
+    if (subtle) {
+      const data = new TextEncoder().encode(payload);
+      const hashBuffer = await subtle.digest('SHA-256', data);
+      return Array.from(new Uint8Array(hashBuffer))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+    }
+  } catch {
+    // Fall through to deterministic fallback if subtle crypto is unavailable
+  }
+
+  let h1 = 0x811c9dc5;
+  for (let i = 0; i < payload.length; i++) {
+    h1 ^= payload.charCodeAt(i);
+    h1 = Math.imul(h1, 0x01000193);
+  }
+  return (h1 >>> 0).toString(16).padStart(8, '0');
+}

@@ -10,7 +10,7 @@ import {
   isLocationRequirementSatisfied,
 } from '../lib/attemptState';
 import { attendanceService, ApiError } from '../lib/attendanceService';
-import { generateDeviceFingerprint } from '../lib/deviceFingerprint';
+import { generateDeviceFingerprint, getDeviceHash } from '../lib/deviceFingerprint';
 import { getOrCreateDeviceId } from '../lib/crypto';
 import type { AttendanceReceipt } from '../types';
 
@@ -78,6 +78,7 @@ export const AttendVideoPage: React.FC = () => {
       }
 
       const deviceId = getOrCreateDeviceId();
+      const deviceHash = await getDeviceHash();
 
       // 3. Clean device_info payload: NEVER include selfie_data_url (Fixes PERF-07)
       const deviceInfo = {
@@ -98,6 +99,7 @@ export const AttendVideoPage: React.FC = () => {
         fingerprintHash: fpHash,
         deviceInfo,
         idempotencyKey,
+        deviceHash,
       });
 
       // Construct Receipt
@@ -157,7 +159,14 @@ export const AttendVideoPage: React.FC = () => {
           return;
         }
 
-        if (errCode === 'SESSION_CLOSED') {
+        if (errCode === 'LIVE_QR_REQUIRED') {
+          setSubmitError(
+            'Please scan the live QR code on the projector screen. Links shared via WhatsApp or email will not work in live mode.'
+          );
+          return;
+        }
+
+        if (errCode === 'SESSION_CLOSED' || errCode === 'SESSION_ENDED') {
           clearAttemptState();
           navigate('/closed', { replace: true });
           return;

@@ -53,6 +53,12 @@ Deno.serve(async (req: Request) => {
     const body = await req.json().catch(() => ({}));
     const token = body?.token || body?.session_token;
     const existingAttemptToken = req.headers.get('x-attempt-token') || body?.attempt_token || null;
+    const qrBucket = body?.qr_bucket ?? null;
+    const qrSig = typeof body?.qr_sig === 'string' && body.qr_sig.trim() ? body.qr_sig.trim() : null;
+    const deviceHash =
+      typeof body?.device_hash === 'string' && body.device_hash.trim()
+        ? body.device_hash.trim()
+        : null;
 
     if (!token || typeof token !== 'string') {
       return new Response(JSON.stringify({
@@ -68,6 +74,9 @@ Deno.serve(async (req: Request) => {
     const { data: result, error: rpcErr } = await supabase.rpc('rpc_validate_session_token', {
       p_raw_token: token.trim(),
       p_existing_attempt_token: existingAttemptToken,
+      p_qr_bucket: qrBucket,
+      p_qr_sig: qrSig,
+      p_device_hash: deviceHash,
     });
 
     if (rpcErr || !result) {
@@ -84,11 +93,11 @@ Deno.serve(async (req: Request) => {
     if (!result.success) {
       const errCode = (result.error as string) || 'VALIDATION_FAILED';
       const status =
-        errCode === 'SESSION_EXPIRED'
+        errCode === 'SESSION_EXPIRED' || errCode === 'SESSION_ENDED'
           ? 410
           : errCode === 'SESSION_NOT_STARTED'
           ? 425
-          : errCode === 'SESSION_CLOSED'
+          : errCode === 'SESSION_CLOSED' || errCode === 'LIVE_QR_REQUIRED'
           ? 403
           : 400;
 
@@ -111,6 +120,9 @@ Deno.serve(async (req: Request) => {
       step: result.step,
       student_id: result.student_id ?? null,
       location_enabled: Boolean(result.location_enabled),
+      qr_verified: Boolean(result.qr_verified),
+      test_mode: Boolean(result.test_mode),
+      session_started_at: result.session_started_at ?? null,
     }), {
       status: 200,
       headers: { ...baseHeaders, 'Content-Type': 'application/json' },

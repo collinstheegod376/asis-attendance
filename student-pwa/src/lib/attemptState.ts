@@ -26,7 +26,8 @@ export function initAttemptState(
   attemptId: string,
   attemptToken: string,
   session: SessionData,
-  existingIdempotencyKey?: string
+  existingIdempotencyKey?: string,
+  meta?: { qr_verified?: boolean; test_mode?: boolean }
 ): AttemptSessionState {
   const current = getAttemptState();
   const idempotencyKey =
@@ -38,6 +39,9 @@ export function initAttemptState(
     attempt_token: attemptToken,
     raw_token: rawToken,
     session_id: session.id,
+    expires_at: session.expires_at,
+    qr_verified: meta?.qr_verified,
+    test_mode: meta?.test_mode ?? session.test_mode,
     session,
     idempotency_key: idempotencyKey,
   };

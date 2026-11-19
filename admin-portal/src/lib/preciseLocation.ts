@@ -54,13 +54,13 @@ function haversineDistanceM(lat1: number, lng1: number, lat2: number, lng2: numb
 /**
  * Computes an inverse-variance (1/accuracy^2) weighted centroid from the tightest
  * spatially consistent cluster of GPS samples:
- *  - Isolates Tier 1 (<= 65m) from Tier 2 (65m-150m) and Tier 3 (> 150m coarse grid)
+ *  - Isolates Tier 1 (<= 60m) from Tier 2 (60m-150m) and Tier 3 (> 150m coarse grid)
  *    so a ±1414m cell/IP callback never pollutes or shifts a hardware GPS fix.
  *  - Keeps samples within 1.5x of the best observed accuracy and within 25m of the best point.
  */
 function computeWeightedLocation(allSamples: LocationSample[]): PreciseLocation {
-  const tier1 = allSamples.filter((s) => s.accuracy <= 65);
-  const tier2 = allSamples.filter((s) => s.accuracy > 65 && s.accuracy <= 150);
+  const tier1 = allSamples.filter((s) => s.accuracy <= 60);
+  const tier2 = allSamples.filter((s) => s.accuracy > 60 && s.accuracy <= 150);
   const pool = tier1.length > 0 ? tier1 : tier2.length > 0 ? tier2 : allSamples;
 
   const sorted = [...pool].sort((a, b) => a.accuracy - b.accuracy);
@@ -91,7 +91,7 @@ function computeWeightedLocation(allSamples: LocationSample[]): PreciseLocation 
   const coarseReason =
     best.accuracy > 150
       ? 'APPROXIMATE_OR_DESKTOP_LOCATION'
-      : best.accuracy > 65
+      : best.accuracy > 60
       ? 'MODERATE_INDOOR_DRIFT'
       : undefined;
 
@@ -108,7 +108,7 @@ function computeWeightedLocation(allSamples: LocationSample[]): PreciseLocation 
 
 export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Promise<PreciseLocation> {
   const {
-    timeoutMs = 8000,
+    timeoutMs = 15000,
     targetAccuracyM = 20,
     minSampleMs = 1500,
     onProgress,
@@ -125,6 +125,7 @@ export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Pr
     const samples: LocationSample[] = [];
     let bestAccuracy = Infinity;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let weakSignalTimer: ReturnType<typeof setTimeout> | null = null;
     let watchId: number | null = null;
     let settled = false;
 
@@ -137,6 +138,10 @@ export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Pr
         clearTimeout(timer);
         timer = null;
       }
+      if (weakSignalTimer !== null) {
+        clearTimeout(weakSignalTimer);
+        weakSignalTimer = null;
+      }
     };
 
     const finishWithCluster = () => {
@@ -145,6 +150,18 @@ export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Pr
       cleanup();
       resolve(computeWeightedLocation(samples));
     };
+
+    weakSignalTimer = setTimeout(() => {
+      if (settled) return;
+      if (bestAccuracy > 60) {
+        onProgress?.({
+          accuracy: bestAccuracy,
+          bestAccuracy,
+          sampleCount: samples.length,
+          step: 'GPS signal is weak — consider stepping near a window',
+        });
+      }
+    }, 10000);
 
     const handleIncomingPosition = (pos: GeolocationPosition) => {
       if (settled) return;
@@ -163,7 +180,7 @@ export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Pr
         return;
       }
 
-      // NOTE: Do NOT discard hardware GNSS fixes (accuracy <= 65m) based on pos.timestamp!
+      // NOTE: Do NOT discard hardware GNSS fixes (accuracy <= 60m) based on pos.timestamp!
       // On stationary iOS Safari / Android devices, the OS GNSS chip often emits a valid
       // stationary satellite fix carrying the timestamp of when the device last moved (15-60s ago).
       // Discarding it leaves only the fresh ±1414m cell/network grid reading.
@@ -178,21 +195,25 @@ export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Pr
         bestAccuracy = accuracy;
       }
 
-      const tier1Samples = samples.filter((s) => s.accuracy <= 65);
+      const tier1Samples = samples.filter((s) => s.accuracy <= 60);
       const crispCount = tier1Samples.filter((s) => s.accuracy <= 15).length;
       const targetCount = tier1Samples.filter((s) => s.accuracy <= targetAccuracyM).length;
       const elapsed = now - startTime;
+
+      const step =
+        crispCount >= 2 || (elapsed >= minSampleMs && targetCount >= 2)
+          ? 'High-precision GPS lock acquired'
+          : bestAccuracy <= 60
+          ? `Averaging satellite fixes (±${Math.round(bestAccuracy)}m)...`
+          : elapsed > 10000
+          ? 'GPS signal is weak — consider stepping near a window'
+          : 'Waiting for hardware GPS satellite lock...';
 
       onProgress?.({
         accuracy,
         bestAccuracy,
         sampleCount: samples.length,
-        step:
-          crispCount >= 2 || (elapsed >= minSampleMs && targetCount >= 2)
-            ? 'High-precision GPS lock acquired'
-            : bestAccuracy <= 65
-            ? `Averaging satellite fixes (±${Math.round(bestAccuracy)}m)...`
-            : 'Waiting for hardware GPS satellite lock...',
+        step,
       });
 
       // Early convergence ONLY on genuine Tier-1 satellite fixes (never on ±1414m coarse fixes):
@@ -253,7 +274,7 @@ export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Pr
             reject(err);
             return;
           }
-          if (samples.length > 0 && bestAccuracy <= 65) {
+          if (samples.length > 0 && bestAccuracy <= 60) {
             finishWithCluster();
           }
         },

@@ -37,19 +37,30 @@ export const LandingPage: React.FC = () => {
   const handleScanSuccess = (decodedText: string) => {
     setScannerOpen(false);
     try {
-      if (decodedText.includes('/join/')) {
-        const parts = decodedText.split('/join/');
-        // Extract only the session token segment; never carry untrusted query params (e.g. ?loc=0)
-        const cleanJoinToken = parts[1]?.split(/[?#]/)[0]?.trim();
-        if (cleanJoinToken) {
-          navigate(`/join/${cleanJoinToken}`);
-          return;
-        }
-      }
-      const clean = decodedText.split(/[?#]/)[0]?.trim();
-      if (clean) {
-        navigate(`/join/${clean}`);
-      }
+      const trimmed = decodedText.trim();
+      if (!trimmed) return;
+
+      const withoutHash = trimmed.split('#')[0] ?? '';
+      const qIdx = withoutHash.indexOf('?');
+      const pathPart = qIdx >= 0 ? withoutHash.slice(0, qIdx) : withoutHash;
+      const searchPart = qIdx >= 0 ? withoutHash.slice(qIdx + 1) : '';
+
+      const rawToken = pathPart.includes('/join/')
+        ? pathPart.split('/join/')[1]?.trim()
+        : pathPart.trim();
+
+      if (!rawToken) return;
+
+      // Preserve only trusted projector QR params (`qt`, `qs`) and strip untrusted params (e.g. `?loc=0`)
+      const incoming = new URLSearchParams(searchPart);
+      const safeParams = new URLSearchParams();
+      const qt = incoming.get('qt');
+      const qs = incoming.get('qs');
+      if (qt) safeParams.set('qt', qt);
+      if (qs) safeParams.set('qs', qs);
+      const queryStr = safeParams.toString();
+
+      navigate(`/join/${rawToken}${queryStr ? `?${queryStr}` : ''}`);
     } catch (e) {
       console.error('Scan handle error:', e);
     }
