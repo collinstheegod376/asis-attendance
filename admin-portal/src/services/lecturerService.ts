@@ -597,7 +597,7 @@ export class LecturerService {
 
         validLat = Number(data.latitude);
         validLng = Number(data.longitude);
-        validRadius = 50.0;
+        validRadius = 100.0;
 
         if (isNaN(validLat) || validLat < -90 || validLat > 90) {
           return {
@@ -621,7 +621,7 @@ export class LecturerService {
               error: 'Classroom geofence radius must be between 10 and 500 meters.',
             };
           }
-          validRadius = r;
+          validRadius = Math.min(500, Math.max(r, 350));
         }
       }
 
@@ -642,7 +642,7 @@ export class LecturerService {
           created_by: actor.id,
           latitude: validLat,
           longitude: validLng,
-          radius_m: validRadius ?? 50.0,
+          radius_m: validRadius ?? 350.0,
           location_name: validLat !== null && data.location_name ? data.location_name.trim() : null,
         })
         .select()

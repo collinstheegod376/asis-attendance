@@ -3,7 +3,7 @@
  * 
  * Uses navigator.geolocation.watchPosition with { enableHighAccuracy: true, maximumAge: 0 }
  * to actively wake up the device's hardware GPS satellite receiver, streaming fixes
- * until satellite-grade precision is achieved (target <= 15m) or the sampling window completes.
+ * until satellite-grade precision is achieved (target <= 20m) or the sampling window completes.
  * 
  * Eliminates cached positions, stale location cookies, and coarse cellular triangulation.
  */
@@ -12,18 +12,21 @@ export interface PreciseLocation {
   latitude: number;
   longitude: number;
   accuracy: number;
+  sampleCount?: number;
 }
 
 export interface AcquireLocationOptions {
   timeoutMs?: number;
   targetAccuracyM?: number;
-  onProgress?: (progress: { accuracy: number; step: string }) => void;
+  minSampleMs?: number;
+  onProgress?: (progress: { accuracy: number; bestAccuracy: number; sampleCount: number; step: string }) => void;
 }
 
 export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Promise<PreciseLocation> {
   const {
-    timeoutMs = 12000,
-    targetAccuracyM = 15,
+    timeoutMs = 5000,
+    targetAccuracyM = 20,
+    minSampleMs = 800,
     onProgress,
   } = options;
 
@@ -34,9 +37,12 @@ export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Pr
       return reject(err);
     }
 
+    const startTime = Date.now();
     let bestReading: GeolocationPosition | null = null;
+    let sampleCount = 0;
     let timer: any = null;
     let watchId: number | null = null;
+    let settled = false;
 
     const cleanup = () => {
       if (watchId !== null) {
@@ -49,16 +55,26 @@ export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Pr
       }
     };
 
+    const finishWithBest = () => {
+      if (settled || !bestReading) return;
+      settled = true;
+      cleanup();
+      resolve({
+        latitude: bestReading.coords.latitude,
+        longitude: bestReading.coords.longitude,
+        accuracy: bestReading.coords.accuracy,
+        sampleCount,
+      });
+    };
+
     // Timeout safety net: accept best fix if available, else fail with clear reason
     timer = setTimeout(() => {
-      cleanup();
+      if (settled) return;
       if (bestReading) {
-        resolve({
-          latitude: bestReading.coords.latitude,
-          longitude: bestReading.coords.longitude,
-          accuracy: bestReading.coords.accuracy,
-        });
+        finishWithBest();
       } else {
+        settled = true;
+        cleanup();
         const timeoutErr = new Error('GPS satellite acquisition timed out. Ensure location services are turned on and retry.');
         (timeoutErr as any).code = 3;
         reject(timeoutErr);
@@ -68,29 +84,35 @@ export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Pr
     try {
       watchId = navigator.geolocation.watchPosition(
         (pos) => {
+          if (settled) return;
+          sampleCount += 1;
           const acc = pos.coords.accuracy;
           if (!bestReading || acc < bestReading.coords.accuracy) {
             bestReading = pos;
           }
 
+          const bestAcc = bestReading.coords.accuracy;
           onProgress?.({
             accuracy: acc,
-            step: acc <= targetAccuracyM ? 'GPS Lock Acquired' : 'Waking up satellite receiver...',
+            bestAccuracy: bestAcc,
+            sampleCount,
+            step: bestAcc <= targetAccuracyM ? 'GPS Lock Acquired' : 'Refining GPS satellite signal...',
           });
 
-          // High accuracy satellite fix achieved: resolve immediately
-          if (acc <= targetAccuracyM) {
-            cleanup();
-            resolve({
-              latitude: pos.coords.latitude,
-              longitude: pos.coords.longitude,
-              accuracy: acc,
-            });
+          const elapsed = Date.now() - startTime;
+          // High accuracy satellite fix achieved: resolve once target accuracy is reached
+          // (Wait a tiny window or 2+ samples unless accuracy is already very sharp <= 12m)
+          if (bestAcc <= targetAccuracyM && (sampleCount >= 2 || elapsed >= minSampleMs || bestAcc <= 12)) {
+            finishWithBest();
           }
         },
         (err) => {
-          // If we haven't acquired any reading at all, propagate error
-          if (!bestReading) {
+          if (settled) return;
+          // If we already have a reading, resolve with our best fix rather than failing
+          if (bestReading) {
+            finishWithBest();
+          } else {
+            settled = true;
             cleanup();
             reject(err);
           }
@@ -102,8 +124,11 @@ export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Pr
         }
       );
     } catch (e) {
-      cleanup();
-      reject(e);
+      if (!settled) {
+        settled = true;
+        cleanup();
+        reject(e);
+      }
     }
   });
 }

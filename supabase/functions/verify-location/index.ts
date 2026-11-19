@@ -30,7 +30,9 @@ Deno.serve(async (req: Request) => {
     const attemptId = body?.attempt_id || null;
     const latitude = Number(body?.latitude);
     const longitude = Number(body?.longitude);
-    const accuracyM = Number(body?.accuracy_m ?? body?.accuracy);
+    const rawAccuracy = body?.accuracy_m ?? body?.accuracy;
+    const parsedAccuracy = rawAccuracy !== null && rawAccuracy !== undefined && rawAccuracy !== '' ? Number(rawAccuracy) : 50;
+    const accuracyM = Number.isFinite(parsedAccuracy) && parsedAccuracy >= 0 ? parsedAccuracy : 50;
 
     if (!attemptToken || typeof attemptToken !== 'string') {
       return new Response(JSON.stringify({
@@ -43,11 +45,18 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    if (isNaN(latitude) || isNaN(longitude) || isNaN(accuracyM)) {
+    if (
+      !Number.isFinite(latitude) ||
+      !Number.isFinite(longitude) ||
+      latitude < -90 ||
+      latitude > 90 ||
+      longitude < -180 ||
+      longitude > 180
+    ) {
       return new Response(JSON.stringify({
         success: false,
         error: 'BAD_REQUEST',
-        message: 'Valid latitude, longitude, and accuracy_m numbers are required.',
+        message: 'Valid latitude and longitude coordinates are required.',
       }), {
         status: 400,
         headers: { ...baseHeaders, 'Content-Type': 'application/json' },
@@ -93,17 +102,24 @@ Deno.serve(async (req: Request) => {
         error: errCode,
         message: result.message,
         ...(result.distance_m !== undefined ? { distance_m: result.distance_m } : {}),
+        ...(result.effective_distance_m !== undefined ? { effective_distance_m: result.effective_distance_m } : {}),
         ...(result.allowed_radius_m !== undefined ? { allowed_radius_m: result.allowed_radius_m } : {}),
+        ...(result.accuracy_buffer_m !== undefined ? { accuracy_buffer_m: result.accuracy_buffer_m } : {}),
       }), {
         status,
         headers: { ...baseHeaders, 'Content-Type': 'application/json' },
       });
     }
 
-    // Success contract matching Agent 2 specification
+    // Success contract matching Agent 2 specification + geofence distance telemetry
     return new Response(JSON.stringify({
       success: true,
       inside_boundary: Boolean(result.inside_boundary),
+      ...(result.distance_m !== undefined ? { distance_m: result.distance_m } : {}),
+      ...(result.effective_distance_m !== undefined ? { effective_distance_m: result.effective_distance_m } : {}),
+      ...(result.allowed_radius_m !== undefined ? { allowed_radius_m: result.allowed_radius_m } : {}),
+      ...(result.accuracy_buffer_m !== undefined ? { accuracy_buffer_m: result.accuracy_buffer_m } : {}),
+      ...(result.message ? { message: result.message } : {}),
     }), {
       status: 200,
       headers: { ...baseHeaders, 'Content-Type': 'application/json' },

@@ -39,9 +39,9 @@ export const LandingPage: React.FC = () => {
     try {
       if (decodedText.includes('/join/')) {
         const parts = decodedText.split('/join/');
-        const token = parts[1]?.split('?')[0]?.split('#')[0];
-        if (token) {
-          navigate(`/join/${token}`);
+        const tokenAndQuery = parts[1]?.split('#')[0]?.trim();
+        if (tokenAndQuery) {
+          navigate(`/join/${tokenAndQuery}`);
           return;
         }
       }

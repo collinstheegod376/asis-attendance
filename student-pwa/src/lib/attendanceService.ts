@@ -152,11 +152,12 @@ export const attendanceService = {
   },
 
   /**
-   * Verifies GPS coordinates against institutional campus boundary.
+   * Verifies GPS coordinates against institutional campus / classroom boundary.
    * Fail closed: returns error if coordinates are invalid or outside boundary.
    */
   async verifyLocation(params: {
     attemptToken: string;
+    attemptId?: string;
     latitude: number;
     longitude: number;
     accuracyM: number;
@@ -165,10 +166,12 @@ export const attendanceService = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-Attempt-Token': params.attemptToken,
       },
       credentials: 'include',
       body: JSON.stringify({
         attempt_token: params.attemptToken,
+        ...(params.attemptId ? { attempt_id: params.attemptId } : {}),
         latitude: params.latitude,
         longitude: params.longitude,
         accuracy_m: params.accuracyM,
@@ -176,8 +179,22 @@ export const attendanceService = {
     });
 
     const json = await res.json().catch(() => ({}));
+    if (json && typeof json === 'object') {
+      if (json.distance_m !== undefined && json.distance_m !== null) {
+        json.distance_m = Number(json.distance_m);
+      }
+      if (json.allowed_radius_m !== undefined && json.allowed_radius_m !== null) {
+        json.allowed_radius_m = Number(json.allowed_radius_m);
+      }
+    }
+
     if (!res.ok) {
-      throw new ApiError(res.status, json.error || 'LOCATION_VERIFICATION_FAILED', json.message || 'Location could not be verified.', json);
+      throw new ApiError(
+        res.status,
+        json.error || 'LOCATION_VERIFICATION_FAILED',
+        json.message || 'Location could not be verified.',
+        json
+      );
     }
 
     return json as VerifyLocationResponse;

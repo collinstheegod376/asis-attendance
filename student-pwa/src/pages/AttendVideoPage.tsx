@@ -14,6 +14,7 @@ export const AttendVideoPage: React.FC = () => {
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [needsLocationRecheck, setNeedsLocationRecheck] = useState(false);
 
   // Step Guards (Fixes QA-06)
   useEffect(() => {
@@ -44,6 +45,7 @@ export const AttendVideoPage: React.FC = () => {
 
     setSubmitting(true);
     setSubmitError(null);
+    setNeedsLocationRecheck(false);
 
     try {
       // 1. Stable idempotency key from attemptState (Fixes QA-11)
@@ -179,6 +181,20 @@ export const AttendVideoPage: React.FC = () => {
           return;
         }
 
+        if (
+          errCode === 'OUTSIDE_CLASSROOM_BOUNDARY' ||
+          errCode === 'OUTSIDE_CAMPUS_BOUNDARY' ||
+          errCode === 'LOCATION_MISSING' ||
+          errCode === 'LOW_ACCURACY'
+        ) {
+          setNeedsLocationRecheck(true);
+          setSubmitError(
+            err.message ||
+              'Your classroom GPS location needs to be re-verified before final submission.'
+          );
+          return;
+        }
+
         setSubmitError(err.message || 'Submission failed. Please tap retry.');
       } else {
         setSubmitError('Network failure connecting to attendance server.');
@@ -283,11 +299,23 @@ export const AttendVideoPage: React.FC = () => {
 
         {/* Error Banner */}
         {submitError && (
-          <div className="mb-4 p-3.5 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-2.5 text-xs text-red-800">
-            <ShieldAlert className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-            <div className="flex-1 min-w-0">
-              <p className="font-semibold break-words">{submitError}</p>
+          <div className="mb-4 p-3.5 bg-red-50 border border-red-200 rounded-2xl flex flex-col gap-2.5 text-xs text-red-800">
+            <div className="flex items-start gap-2.5">
+              <ShieldAlert className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold break-words">{submitError}</p>
+              </div>
             </div>
+            {needsLocationRecheck && (
+              <button
+                type="button"
+                onClick={() => navigate('/attend/location')}
+                className="w-full min-h-[38px] inline-flex items-center justify-center gap-1.5 bg-white hover:bg-red-100/50 text-[#1E40AF] border border-red-200 font-bold text-xs py-2 px-3 rounded-xl transition-all"
+              >
+                <span>Re-verify Classroom GPS Location</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         )}
 

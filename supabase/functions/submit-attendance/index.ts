@@ -209,6 +209,7 @@ Deno.serve(async (req: Request) => {
         action: result.action,
         reference_code: result.reference_code,
         ...(result.distance_m !== undefined ? { distance_m: result.distance_m } : {}),
+        ...(result.effective_distance_m !== undefined ? { effective_distance_m: result.effective_distance_m } : {}),
         ...(result.allowed_radius_m !== undefined ? { allowed_radius_m: result.allowed_radius_m } : {}),
       }), {
         status,

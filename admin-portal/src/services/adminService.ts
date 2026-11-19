@@ -915,7 +915,7 @@ export class AdminService {
       campus_center_lat: 6.2235,
       campus_center_lng: 6.6180,
       campus_radius_m: 1500,
-      location_accuracy_threshold_m: 50,
+      location_accuracy_threshold_m: 1500,
       default_session_duration_minutes: 60,
       max_session_duration_minutes: 180,
       selfie_retention_days: 180,
@@ -943,7 +943,7 @@ export class AdminService {
         campus_boundary_geojson: typeof data.campus_boundary_geojson === 'string'
           ? data.campus_boundary_geojson
           : (data.campus_boundary_geojson ? JSON.stringify(data.campus_boundary_geojson) : ''),
-        location_accuracy_threshold_m: data.location_accuracy_threshold_m || 50,
+        location_accuracy_threshold_m: data.location_accuracy_threshold_m || 1500,
         default_session_duration_minutes: data.default_session_duration_minutes || 60,
         max_session_duration_minutes: data.max_session_duration_minutes || 180,
         selfie_retention_days: data.selfie_retention_days || 180,
