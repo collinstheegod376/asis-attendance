@@ -18,6 +18,7 @@ import {
   MIN_CONSISTENT_SAMPLES_FAST_LOCK,
   MAX_FAST_LOCK_SPREAD_M,
   haversineDistanceMeters,
+  normalizeGpsTimestamp,
   validateGpsFix,
   detectTeleportationJump,
   selectConsistentClusterAndAverage,
@@ -523,7 +524,7 @@ export const AttendLocationPage: React.FC = () => {
           {
             code: 'STALE_LOCATION',
             message:
-              'Your phone only reported a cached old location (> 10s old). Toggle Location off and on, move near a window, and tap High-Precision GPS Retry.',
+              'Your phone only reported a cached old location (> 60s old). Toggle Location off and on, move near a window, and tap High-Precision GPS Retry.',
             accuracyM: 0,
           },
           null
@@ -541,152 +542,172 @@ export const AttendLocationPage: React.FC = () => {
       }
     }, MAX_ACQUISITION_WINDOW_MS);
 
-    // 3. Start streaming high-accuracy hardware GNSS fixes (maximumAge: 0 forbids stale cached OS fixes)
-    try {
-      watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          if (cancelled || !isMountedRef.current) return;
+    const handlePosition = (pos: GeolocationPosition) => {
+      if (cancelled || !isMountedRef.current) return;
 
-          const now = Date.now();
-          const currentFix: GpsFix = {
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            accuracy: pos.coords.accuracy,
-            timestamp: pos.timestamp || now,
-            receivedAt: now,
-          };
+      const now = Date.now();
+      const currentFix: GpsFix = {
+        latitude: pos.coords.latitude,
+        longitude: pos.coords.longitude,
+        accuracy: pos.coords.accuracy,
+        timestamp: normalizeGpsTimestamp(pos.timestamp, now),
+        receivedAt: now,
+      };
 
-          const validation = validateGpsFix(currentFix, now, MAX_ALLOWED_ACCURACY_M);
-          if (!validation.valid) {
-            const remainingSec = Math.max(
-              1,
-              Math.ceil((MAX_ACQUISITION_WINDOW_MS - (now - startTime)) / 1000)
-            );
-            if (validation.reason === 'COARSE_ACCURACY') {
-              setLiveAccuracy(currentFix.accuracy);
-              if (bestRejectedAccuracyM === null || currentFix.accuracy < bestRejectedAccuracyM) {
-                bestRejectedAccuracyM = currentFix.accuracy;
-              }
-              setGpsProgressStep(
-                `GPS signal is ±${Math.round(currentFix.accuracy)}m — must be ±${MAX_ALLOWED_ACCURACY_M}m or better (${remainingSec}s)...`
-              );
-            } else if (validation.reason === 'STALE_FIX' || validation.reason === 'FUTURE_TIMESTAMP') {
-              sawStaleFix = true;
-              setGpsProgressStep(
-                `Discarded cached OS location — waking live GPS satellites (${remainingSec}s)...`
-              );
-            } else {
-              sawInvalidFix = true;
-              setGpsProgressStep(
-                `Rejected invalid GPS reading — waiting for genuine satellite signal (${remainingSec}s)...`
-              );
-            }
-            return;
+      const validation = validateGpsFix(currentFix, now, MAX_ALLOWED_ACCURACY_M);
+      if (!validation.valid) {
+        const remainingSec = Math.max(
+          1,
+          Math.ceil((MAX_ACQUISITION_WINDOW_MS - (now - startTime)) / 1000)
+        );
+        if (validation.reason === 'COARSE_ACCURACY') {
+          setLiveAccuracy(currentFix.accuracy);
+          if (bestRejectedAccuracyM === null || currentFix.accuracy < bestRejectedAccuracyM) {
+            bestRejectedAccuracyM = currentFix.accuracy;
           }
-
-          // Anti-spoof check: detect impossible teleportation jump between consecutive high-accuracy fixes
-          if (lastAcceptedFix) {
-            const teleport = detectTeleportationJump(lastAcceptedFix, currentFix);
-            if (teleport.isTeleport) {
-              validSamples.length = 0;
-              bestClusteredFix = null;
-              renderFinalFailure(
-                {
-                  code: 'GPS_TELEPORT_DETECTED',
-                  message: `Suspicious GPS location jump detected (${Math.round(teleport.distanceM)}m in ${(teleport.dtMs / 1000).toFixed(1)}s). Disable any mock location / spoofing apps, stay still, and tap High-Precision GPS Retry.`,
-                  accuracyM: currentFix.accuracy,
-                },
-                null
-              );
-              return;
-            }
-          }
-
-          lastAcceptedFix = currentFix;
-          validSamples.push(currentFix);
-
-          // Retain recent fresh samples (max 12, and drop anything older than 15s)
-          while (
-            validSamples.length > 12 ||
-            (validSamples.length > 1 && now - validSamples[0].timestamp > 15_000)
-          ) {
-            validSamples.shift();
-          }
-
-          const clustered = selectConsistentClusterAndAverage(validSamples, MAX_ALLOWED_ACCURACY_M);
-          if (!clustered) return;
-
-          if (
-            !bestClusteredFix ||
-            clustered.accuracy < bestClusteredFix.accuracy ||
-            (clustered.sampleCount > bestClusteredFix.sampleCount &&
-              clustered.accuracy <= bestClusteredFix.accuracy + 3)
-          ) {
-            bestClusteredFix = clustered;
-          }
-
-          setLiveAccuracy(clustered.accuracy);
-          setLiveSampleCount(clustered.sampleCount);
-
-          // CASE A: Confirmed multi-sample satellite lock (<= 20m, >= 2 consistent samples, <= 25m spread)
-          if (
-            clustered.sampleCount >= MIN_CONSISTENT_SAMPLES_FAST_LOCK &&
-            clustered.accuracy <= TARGET_HIGH_ACCURACY_M &&
-            clustered.spreadM <= MAX_FAST_LOCK_SPREAD_M
-          ) {
-            if (hasSignificantImprovement(clustered, lastVerifiedFix)) {
-              void verifyFixWithBackend(clustered, false);
-              return;
-            }
-          }
-
-          // CASE B: Still in initial settling window -> collect additional GNSS samples for weighted averaging
-          if (!settleWindowElapsed && !lastVerifiedFix) {
-            setGpsProgressStep(
-              `Confirming satellite cluster (±${clustered.accuracy.toFixed(1)}m · ${clustered.sampleCount} sample${clustered.sampleCount === 1 ? '' : 's'})...`
-            );
-            return;
-          }
-
-          // CASE C: After settling window (or refining after early failure) -> re-verify on meaningful improvement
-          if (hasSignificantImprovement(clustered, lastVerifiedFix)) {
-            void verifyFixWithBackend(clustered, false);
-          }
-        },
-        (geoErr) => {
-          if (cancelled || !isMountedRef.current) return;
-
-          // Permission denied (code 1) is immediately terminal
-          if (geoErr?.code === 1) {
-            cleanup();
-            setVerifiedSuccess(false);
-            setErrorStatus(
-              'Location permission was denied. Please allow Precise Location access in your browser or phone settings and tap retry.'
-            );
-            setLoading(false);
-            return;
-          }
-
-          // For transient position unavailable (2) or timeout (3), only abort if acquisition window closed with no valid cluster
-          if (searchWindowClosed && !bestClusteredFix) {
-            cleanup();
-            setVerifiedSuccess(false);
-            setErrorStatus(
-              bestRejectedAccuracyM !== null
-                ? formatLowAccuracyMessage(bestRejectedAccuracyM, MAX_ALLOWED_ACCURACY_M)
-                : geoErr?.code === 2
-                ? 'GPS signal unavailable indoors. Move near a window or turn on Precise Location & Wi-Fi scanning, then retry.'
-                : 'GPS satellite lock timed out. Move near a window and tap High-Precision GPS Retry.'
-            );
-            setLoading(false);
-          }
-        },
-        {
-          enableHighAccuracy: true,
-          maximumAge: 0,
-          timeout: MAX_ACQUISITION_WINDOW_MS,
+          setGpsProgressStep(
+            `GPS signal is ±${Math.round(currentFix.accuracy)}m — must be ±${MAX_ALLOWED_ACCURACY_M}m or better (${remainingSec}s)...`
+          );
+        } else if (validation.reason === 'STALE_FIX' || validation.reason === 'FUTURE_TIMESTAMP') {
+          sawStaleFix = true;
+          setGpsProgressStep(
+            `Discarded cached OS location — waking live GPS satellites (${remainingSec}s)...`
+          );
+        } else {
+          sawInvalidFix = true;
+          setGpsProgressStep(
+            `Rejected invalid GPS reading — waiting for genuine satellite signal (${remainingSec}s)...`
+          );
         }
-      );
+        return;
+      }
+
+      // Deduplicate identical hardware reading delivered simultaneously by getCurrentPosition + watchPosition
+      if (
+        lastAcceptedFix &&
+        currentFix.timestamp === lastAcceptedFix.timestamp &&
+        currentFix.latitude === lastAcceptedFix.latitude &&
+        currentFix.longitude === lastAcceptedFix.longitude &&
+        currentFix.accuracy === lastAcceptedFix.accuracy
+      ) {
+        return;
+      }
+
+      // Anti-spoof check: detect impossible teleportation jump between consecutive high-accuracy fixes
+      if (lastAcceptedFix) {
+        const teleport = detectTeleportationJump(lastAcceptedFix, currentFix);
+        if (teleport.isTeleport) {
+          validSamples.length = 0;
+          bestClusteredFix = null;
+          renderFinalFailure(
+            {
+              code: 'GPS_TELEPORT_DETECTED',
+              message: `Suspicious GPS location jump detected (${Math.round(teleport.distanceM)}m in ${(teleport.dtMs / 1000).toFixed(1)}s). Disable any mock location / spoofing apps, stay still, and tap High-Precision GPS Retry.`,
+              accuracyM: currentFix.accuracy,
+            },
+            null
+          );
+          return;
+        }
+      }
+
+      lastAcceptedFix = currentFix;
+      validSamples.push(currentFix);
+
+      // Retain recent fresh samples (max 12, and drop anything received more than 15s ago)
+      while (
+        validSamples.length > 12 ||
+        (validSamples.length > 1 && now - (validSamples[0].receivedAt ?? validSamples[0].timestamp) > 15_000)
+      ) {
+        validSamples.shift();
+      }
+
+      const clustered = selectConsistentClusterAndAverage(validSamples, MAX_ALLOWED_ACCURACY_M);
+      if (!clustered) return;
+
+      if (
+        !bestClusteredFix ||
+        clustered.accuracy < bestClusteredFix.accuracy ||
+        (clustered.sampleCount > bestClusteredFix.sampleCount &&
+          clustered.accuracy <= bestClusteredFix.accuracy + 3)
+      ) {
+        bestClusteredFix = clustered;
+      }
+
+      setLiveAccuracy(clustered.accuracy);
+      setLiveSampleCount(clustered.sampleCount);
+
+      // CASE A: Confirmed multi-sample satellite lock (<= 20m, >= 2 consistent samples, <= 25m spread)
+      if (
+        clustered.sampleCount >= MIN_CONSISTENT_SAMPLES_FAST_LOCK &&
+        clustered.accuracy <= TARGET_HIGH_ACCURACY_M &&
+        clustered.spreadM <= MAX_FAST_LOCK_SPREAD_M
+      ) {
+        if (hasSignificantImprovement(clustered, lastVerifiedFix)) {
+          void verifyFixWithBackend(clustered, false);
+          return;
+        }
+      }
+
+      // CASE B: Still in initial settling window -> collect additional GNSS samples for weighted averaging
+      if (!settleWindowElapsed && !lastVerifiedFix) {
+        setGpsProgressStep(
+          `Confirming satellite cluster (±${clustered.accuracy.toFixed(1)}m · ${clustered.sampleCount} sample${clustered.sampleCount === 1 ? '' : 's'})...`
+        );
+        return;
+      }
+
+      // CASE C: After settling window (or refining after early failure) -> re-verify on meaningful improvement
+      if (hasSignificantImprovement(clustered, lastVerifiedFix)) {
+        void verifyFixWithBackend(clustered, false);
+      }
+    };
+
+    const handleGeoError = (geoErr: GeolocationPositionError) => {
+      if (cancelled || !isMountedRef.current) return;
+
+      // Permission denied (code 1) is immediately terminal
+      if (geoErr?.code === 1) {
+        cleanup();
+        setVerifiedSuccess(false);
+        setErrorStatus(
+          'Location permission was denied. Please allow Precise Location access in your browser or phone settings and tap retry.'
+        );
+        setLoading(false);
+        return;
+      }
+
+      // For transient position unavailable (2) or timeout (3), only abort if acquisition window closed with no valid cluster
+      if (searchWindowClosed && !bestClusteredFix) {
+        cleanup();
+        setVerifiedSuccess(false);
+        setErrorStatus(
+          bestRejectedAccuracyM !== null
+            ? formatLowAccuracyMessage(bestRejectedAccuracyM, MAX_ALLOWED_ACCURACY_M)
+            : geoErr?.code === 2
+            ? 'GPS signal unavailable indoors. Move near a window or turn on Precise Location & Wi-Fi scanning, then retry.'
+            : 'GPS satellite lock timed out. Move near a window and tap High-Precision GPS Retry.'
+        );
+        setLoading(false);
+      }
+    };
+
+    const geoOptions: PositionOptions = {
+      enableHighAccuracy: true,
+      maximumAge: 0,
+      timeout: MAX_ACQUISITION_WINDOW_MS,
+    };
+
+    // 3. Fire getCurrentPosition in parallel with watchPosition to force an immediate A-GPS hardware poll on iOS WebKit & Android Chrome
+    try {
+      if (typeof navigator.geolocation.getCurrentPosition === 'function') {
+        try {
+          navigator.geolocation.getCurrentPosition(handlePosition, handleGeoError, geoOptions);
+        } catch {
+          // Ignore synchronous getCurrentPosition errors; watchPosition handles primary stream
+        }
+      }
+      watchId = navigator.geolocation.watchPosition(handlePosition, handleGeoError, geoOptions);
     } catch (e: any) {
       cleanup();
       setVerifiedSuccess(false);

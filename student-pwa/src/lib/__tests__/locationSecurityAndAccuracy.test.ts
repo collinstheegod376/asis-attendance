@@ -34,6 +34,8 @@ if (typeof globalThis.sessionStorage === 'undefined') {
 import {
   MAX_ALLOWED_ACCURACY_M,
   MAX_FIX_AGE_MS,
+  MAX_FUTURE_SKEW_MS,
+  normalizeGpsTimestamp,
   resolveLocationEnabled,
   validateGpsFix,
   detectTeleportationJump,
@@ -94,28 +96,53 @@ describe('Student PWA High-Accuracy GNSS & Anti-Bypass Security Suite', () => {
   describe('2. Stale Cache, Coarse Accuracy & Anti-Spoof Validation', () => {
     const now = 1_700_000_000_000;
 
-    it('rejects stale OS-cached fixes older than 10 seconds', () => {
+    it('accepts stationary hardware GNSS fixes up to 60 seconds old (e.g. 25s old) and rejects stale fixes older than 60 seconds', () => {
+      // Stationary student phone inside lecture hall: 25s old hardware satellite fix must be accepted
+      const stationaryFix: GpsFix = {
+        latitude: 6.5244,
+        longitude: 3.3792,
+        accuracy: 12,
+        timestamp: now - 25_000,
+      };
+      expect(validateGpsFix(stationaryFix, now).valid).toBe(true);
+
+      // Genuine stale cached OS fix (> 60s old, e.g. 75s) must be rejected as STALE_FIX
       const staleFix: GpsFix = {
         latitude: 6.5244,
         longitude: 3.3792,
         accuracy: 10,
-        timestamp: now - MAX_FIX_AGE_MS - 1,
+        timestamp: now - 75_000,
       };
       const res = validateGpsFix(staleFix, now);
       expect(res.valid).toBe(false);
       expect(res.reason).toBe('STALE_FIX');
     });
 
-    it('rejects future-forged timestamps (> 10s ahead of device clock)', () => {
+    it('allows minor monotonic clock skew up to 15s and rejects future-forged timestamps (> 15s ahead)', () => {
+      const slightSkewFix: GpsFix = {
+        latitude: 6.5244,
+        longitude: 3.3792,
+        accuracy: 10,
+        timestamp: now + 5_000,
+      };
+      expect(validateGpsFix(slightSkewFix, now).valid).toBe(true);
+
       const futureFix: GpsFix = {
         latitude: 6.5244,
         longitude: 3.3792,
         accuracy: 10,
-        timestamp: now + MAX_FIX_AGE_MS + 5000,
+        timestamp: now + MAX_FUTURE_SKEW_MS + 5_000,
       };
       const res = validateGpsFix(futureFix, now);
       expect(res.valid).toBe(false);
       expect(res.reason).toBe('FUTURE_TIMESTAMP');
+    });
+
+    it('normalizes missing or monotonic boot-clock timestamps (< 1e12) while preserving Unix epoch timestamps', () => {
+      expect(normalizeGpsTimestamp(undefined, now)).toBe(now);
+      expect(normalizeGpsTimestamp(0, now)).toBe(now);
+      expect(normalizeGpsTimestamp(45_230, now)).toBe(now); // monotonic performance.now()
+      expect(normalizeGpsTimestamp(now - 25_000, now)).toBe(now - 25_000); // true epoch preserved
     });
 
     it('rejects mock-GPS zero/negative/NaN accuracy', () => {
@@ -225,12 +252,19 @@ describe('Student PWA High-Accuracy GNSS & Anti-Bypass Security Suite', () => {
       expect(fetchSpy).not.toHaveBeenCalled();
     });
 
-    it('formatLowAccuracyMessage gives clear ±Xm vs ±65m actionable guidance', () => {
+    it('formatLowAccuracyMessage gives clear ±Xm vs ±65m actionable guidance including OS Precise Location steps for >= 500m', () => {
       const msg = formatLowAccuracyMessage(214.6, MAX_ALLOWED_ACCURACY_M);
       expect(msg).toContain('±215m');
       expect(msg).toContain('±65m');
       expect(msg.toLowerCase()).toContain('window');
       expect(msg.toLowerCase()).toContain('precise location');
+
+      const approxMsg = formatLowAccuracyMessage(1414.2, MAX_ALLOWED_ACCURACY_M);
+      expect(approxMsg).toContain('±1414m');
+      expect(approxMsg).toContain('±65m');
+      expect(approxMsg).toContain('Precise Location');
+      expect(approxMsg).toContain('iOS: Settings');
+      expect(approxMsg).toContain('Android:');
     });
   });
 
@@ -362,29 +396,32 @@ describe('Student PWA High-Accuracy GNSS & Anti-Bypass Security Suite', () => {
   });
 
   describe('5. Live watchPosition GNSS Acquisition Simulation', () => {
-    it('discards stale, coarse, and null-island readings and resolves on consistent fresh GNSS cluster', async () => {
+    it('discards stale (> 60s), coarse, and null-island readings, fires parallel getCurrentPosition, and resolves on consistent fresh GNSS cluster', async () => {
       vi.useFakeTimers();
       const baseNow = 1_700_000_000_000;
       vi.setSystemTime(baseNow);
 
       let watchCallback: PositionCallback | null = null;
       const clearWatch = vi.fn();
+      const getCurrentPosition = vi.fn();
       const watchPosition = vi.fn((cb: PositionCallback) => {
         watchCallback = cb;
         return 42;
       });
 
       Object.defineProperty(globalThis, 'navigator', {
-        value: { geolocation: { watchPosition, clearWatch } },
+        value: { geolocation: { watchPosition, getCurrentPosition, clearWatch } },
         configurable: true,
       });
 
       const promise = acquirePreciseLocation({ timeoutMs: 12_000 });
+      expect(getCurrentPosition).toHaveBeenCalledTimes(1);
+      expect(watchPosition).toHaveBeenCalledTimes(1);
 
-      // 1. Stale cached fix (30s old) -> ignored
+      // 1. Stale cached fix (75s old > 60s limit) -> ignored
       watchCallback!({
         coords: { latitude: 6.5244, longitude: 3.3792, accuracy: 8 } as GeolocationCoordinates,
-        timestamp: baseNow - 30_000,
+        timestamp: baseNow - 75_000,
       } as GeolocationPosition);
 
       // 2. Coarse cell tower fix (240m) -> ignored
@@ -399,11 +436,11 @@ describe('Student PWA High-Accuracy GNSS & Anti-Bypass Security Suite', () => {
         timestamp: baseNow,
       } as GeolocationPosition);
 
-      // 4. Fresh satellite fix #1 (14m)
+      // 4. Stationary hardware satellite fix #1 (14m, timestamp from 25s ago) -> accepted!
       vi.setSystemTime(baseNow + 1000);
       watchCallback!({
         coords: { latitude: 6.52440, longitude: 3.37920, accuracy: 14 } as GeolocationCoordinates,
-        timestamp: baseNow + 1000,
+        timestamp: baseNow - 24_000,
       } as GeolocationPosition);
 
       // 5. Fresh satellite fix #2 (10m) consistent with #1 -> resolves fast lock!

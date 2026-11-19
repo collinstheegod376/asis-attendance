@@ -52,7 +52,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [newSessionCreated, setNewSessionCreated] = useState<LectureSession | null>(null);
 
-  // Classroom Geofence state (Default enabled, strict exact radius)
+  // Classroom Geofence state (Default enabled, strict exact radius, fresh capture required per session)
   const [useGeofence, setUseGeofence] = useState(true);
   const [locationName, setLocationName] = useState('');
   const [sessionLat, setSessionLat] = useState<number | ''>('');
@@ -65,6 +65,21 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
   const [liveStep, setLiveStep] = useState<string>('Waking up satellite GPS...');
   const [sampleCount, setSampleCount] = useState<number>(0);
 
+  const openNewSessionModal = () => {
+    setNewSessionCreated(null);
+    setTitle('');
+    setStartsAt(formatToDateTimeLocalWAT(new Date()));
+    setSessionLat('');
+    setSessionLng('');
+    setLocationName('');
+    setLocationAccuracy(null);
+    setLocationError(null);
+    setFormError('');
+    setLiveAccuracy(null);
+    setSampleCount(0);
+    setCreateModalOpen(true);
+  };
+
   const handleCaptureLocation = async () => {
     setLocationError(null);
     setLiveAccuracy(null);
@@ -72,17 +87,17 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
     setSampleCount(0);
 
     if (!navigator.geolocation) {
-      setLocationError('Geolocation is not supported by your browser. Please enter coordinates manually below.');
+      setLocationError(
+        'Geolocation is not supported by your browser. Please enter the classroom Latitude and Longitude manually below.'
+      );
       return;
     }
     setDetectingLocation(true);
     try {
-      // High-precision multi-sample GNSS convergence (up to 10s, min 2s warmup unless >= 3 crisp fixes <= 12m)
-      // Discards stale fixes (> 10s old) and computes an inverse-variance weighted centroid.
       const precise = await acquirePreciseLocation({
-        timeoutMs: 10000,
-        targetAccuracyM: 15,
-        minSampleMs: 2000,
+        timeoutMs: 8000,
+        targetAccuracyM: 20,
+        minSampleMs: 1500,
         onProgress: (p) => {
           setLiveAccuracy(Math.round(p.bestAccuracy * 10) / 10);
           setSampleCount(p.sampleCount);
@@ -91,33 +106,27 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
       });
 
       const roundedAcc = Math.round(precise.accuracy * 10) / 10;
+      const capturedLat = Number(precise.latitude.toFixed(7));
+      const capturedLng = Number(precise.longitude.toFixed(7));
 
-      // Hard-block grossly inaccurate desktop/IP/cell-tower readings (> 100m)
-      if (roundedAcc > 100) {
-        setSessionLat('');
-        setSessionLng('');
-        setLocationAccuracy(null);
-        setLocationError(
-          `Location rejected: your device returned coarse accuracy of ±${roundedAcc}m (likely desktop Wi-Fi/IP or cell-tower triangulation, which can be hundreds of meters off from the hall). Please capture location using a GPS-enabled phone near a doorway/window, or enter the exact hall coordinates manually below.`
-        );
-        return;
-      }
-
-      // Strictly preserve the lecturer's chosen radiusM (NO silent inflation)
-      setSessionLat(Number(precise.latitude.toFixed(7)));
-      setSessionLng(Number(precise.longitude.toFixed(7)));
+      // Always populate coordinates from live capture and preserve lecturer's chosen radiusM
+      setSessionLat(capturedLat);
+      setSessionLng(capturedLng);
       setLocationAccuracy(roundedAcc);
       if (!locationName) setLocationName('Classroom Lecture Hall');
       setUseGeofence(true);
       setLocationError(null);
     } catch (err: any) {
-      let msg = 'Could not capture GPS location: ' + (err?.message || 'GPS fix timed out');
+      let msg = 'Could not capture live GPS: ' + (err?.message || 'GPS fix timed out');
       if (err?.code === 1) {
-        msg = 'Geolocation permission was denied by your browser. Please allow location permissions in your browser address bar, or enter classroom coordinates manually below.';
+        msg =
+          'Browser location permission was denied. Please enable Location Permission (with Precise Location ON) in your browser settings and tap "Capture My Current Location" again.';
       } else if (err?.code === 2) {
-        msg = 'GPS fix unavailable on your current device or network. Please use a GPS-enabled phone or enter coordinates manually below.';
+        msg =
+          'Live GPS signal is unavailable on this device. Please retry on a GPS-enabled device or enter the classroom Latitude and Longitude manually below.';
       } else if (err?.code === 3) {
-        msg = 'GPS satellite acquisition timed out. Move near a window/doorway and retry, or enter classroom coordinates manually below.';
+        msg =
+          'Live GPS satellite lock timed out indoors. Please move closer to a window or doorway and tap "Capture My Current Location" again, or enter coordinates manually.';
       }
       setLocationError(msg);
     } finally {
@@ -198,12 +207,6 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
         setFormError('Classroom Longitude must be between -180 and 180 degrees.');
         return;
       }
-      if (locationAccuracy !== null && locationAccuracy > 100) {
-        setFormError(
-          `Captured GPS accuracy (±${locationAccuracy}m) is too coarse to lock a hall boundary. Capture location on a GPS-enabled phone or enter exact hall coordinates manually.`
-        );
-        return;
-      }
       if (radiusM < 15 || radiusM > 500) {
         setFormError('Classroom radius must be between 15 and 500 meters.');
         return;
@@ -235,6 +238,10 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
       setFormError(res.error || 'Failed to create session.');
     } else {
       setNewSessionCreated(res.session);
+      setSessionLat('');
+      setSessionLng('');
+      setLocationAccuracy(null);
+      setLocationError(null);
       await loadSessions();
       onSessionUpdated();
     }
@@ -309,10 +316,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
         </div>
 
         <button
-          onClick={() => {
-            setNewSessionCreated(null);
-            setCreateModalOpen(true);
-          }}
+          onClick={openNewSessionModal}
           disabled={course.status === 'archived'}
           className={`w-full sm:w-auto justify-center shrink-0 inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs transition shadow-xs cursor-pointer ${
             course.status === 'archived'
@@ -337,7 +341,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
           title="No Sessions Created for this Course"
           description="Create your first lecture session above to generate an attendance QR code and open Classroom Projector Mode."
           actionText={course.status !== 'archived' ? 'Create Session' : undefined}
-          onAction={() => setCreateModalOpen(true)}
+          onAction={openNewSessionModal}
         />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -703,13 +707,31 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
 
                         {/* Coarse accuracy warning (> 35m) without inflating radius */}
                         {locationAccuracy !== null && locationAccuracy > 35 && (
-                          <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-[11px] font-medium flex items-start gap-2">
-                            <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
-                            <span>
-                              Coarse location detected (<strong>&plusmn;{locationAccuracy}m</strong> — Wi-Fi/cellular estimate).
-                              Your chosen <strong>{radiusM}m</strong> boundary will be strictly enforced without auto-expansion, so a shifted pin may reject students in the hall.
-                              For accurate check-ins, re-capture using a smartphone with GPS near a doorway or window, or enter exact hall coordinates manually.
-                            </span>
+                          <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-[11px] font-medium flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <div className="flex items-start gap-2">
+                              <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                              <span>
+                                {locationAccuracy >= 500 ? (
+                                  <>
+                                    Browser returned an Approximate/Network location (<strong>&plusmn;{locationAccuracy}m</strong>).
+                                    Turn ON <strong>Precise Location</strong> for Safari/Chrome (or re-capture near a window), or proceed with the loaded coordinates below.
+                                  </>
+                                ) : (
+                                  <>
+                                    Indoor GPS drift detected (<strong>&plusmn;{locationAccuracy}m</strong>).
+                                    Your chosen <strong>{radiusM}m</strong> radius is preserved — you can proceed with the loaded coordinates or re-capture near a window.
+                                  </>
+                                )}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={handleCaptureLocation}
+                              disabled={detectingLocation}
+                              className="shrink-0 inline-flex items-center justify-center px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold transition cursor-pointer disabled:opacity-50"
+                            >
+                              Re-capture GPS
+                            </button>
                           </div>
                         )}
 

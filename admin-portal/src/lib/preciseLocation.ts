@@ -1,10 +1,11 @@
 /**
- * High-Precision GPS Satellite Acquisition
+ * High-Precision GPS Satellite Acquisition (Lecturer Portal)
  *
- * Uses navigator.geolocation.watchPosition with { enableHighAccuracy: true, maximumAge: 0 }
- * to actively wake up the device's hardware GNSS receiver, discard stale cached positions,
- * reject spatial/coarse outliers, and compute an inverse-variance (1/accuracy^2) weighted
- * centroid over the tightest cluster of satellite fixes.
+ * Uses parallel navigator.geolocation.getCurrentPosition + watchPosition with
+ * { enableHighAccuracy: true, maximumAge: 0 } to immediately wake the hardware
+ * GNSS receiver on iOS Safari and Android Chrome, isolate Tier-1 satellite fixes
+ * (<= 65m) from coarse 1km grid/cell-tower callbacks (like ±1414m), and compute
+ * an inverse-variance (1/accuracy^2) weighted centroid over the tightest cluster.
  */
 
 export interface PreciseLocation {
@@ -13,13 +14,14 @@ export interface PreciseLocation {
   accuracy: number;
   sampleCount: number;
   clusteredSamples?: number;
+  isCoarse?: boolean;
+  coarseReason?: 'APPROXIMATE_OR_DESKTOP_LOCATION' | 'MODERATE_INDOOR_DRIFT';
 }
 
 export interface AcquireLocationOptions {
   timeoutMs?: number;
   targetAccuracyM?: number;
   minSampleMs?: number;
-  maxStaleAgeMs?: number;
   onProgress?: (progress: {
     accuracy: number;
     bestAccuracy: number;
@@ -32,7 +34,7 @@ interface LocationSample {
   latitude: number;
   longitude: number;
   accuracy: number;
-  timestamp: number;
+  receivedAt: number;
 }
 
 const EARTH_RADIUS_M = 6371000;
@@ -44,19 +46,24 @@ function haversineDistanceM(lat1: number, lng1: number, lat2: number, lng2: numb
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const clampedA = Math.min(1, Math.max(0, a));
+  const c = 2 * Math.atan2(Math.sqrt(clampedA), Math.sqrt(1 - clampedA));
   return EARTH_RADIUS_M * c;
 }
 
 /**
  * Computes an inverse-variance (1/accuracy^2) weighted centroid from the tightest
  * spatially consistent cluster of GPS samples:
- *  - Keeps samples within 1.5x of the best observed accuracy
- *  - Rejects spatial outliers further than 25m from the single most accurate reading
- *  - Preserves the best observed accuracy (without artificially shrinking correlated Wi-Fi bias)
+ *  - Isolates Tier 1 (<= 65m) from Tier 2 (65m-150m) and Tier 3 (> 150m coarse grid)
+ *    so a ±1414m cell/IP callback never pollutes or shifts a hardware GPS fix.
+ *  - Keeps samples within 1.5x of the best observed accuracy and within 25m of the best point.
  */
-function computeWeightedLocation(samples: LocationSample[]): PreciseLocation {
-  const sorted = [...samples].sort((a, b) => a.accuracy - b.accuracy);
+function computeWeightedLocation(allSamples: LocationSample[]): PreciseLocation {
+  const tier1 = allSamples.filter((s) => s.accuracy <= 65);
+  const tier2 = allSamples.filter((s) => s.accuracy > 65 && s.accuracy <= 150);
+  const pool = tier1.length > 0 ? tier1 : tier2.length > 0 ? tier2 : allSamples;
+
+  const sorted = [...pool].sort((a, b) => a.accuracy - b.accuracy);
   const best = sorted[0];
   const accuracyCeiling = best.accuracy * 1.5;
 
@@ -80,21 +87,30 @@ function computeWeightedLocation(samples: LocationSample[]): PreciseLocation {
     weightSum += weight;
   }
 
+  const isCoarse = best.accuracy > 100;
+  const coarseReason =
+    best.accuracy > 150
+      ? 'APPROXIMATE_OR_DESKTOP_LOCATION'
+      : best.accuracy > 65
+      ? 'MODERATE_INDOOR_DRIFT'
+      : undefined;
+
   return {
     latitude: weightedLatSum / weightSum,
     longitude: weightedLngSum / weightSum,
     accuracy: best.accuracy,
-    sampleCount: samples.length,
+    sampleCount: allSamples.length,
     clusteredSamples: activeCluster.length,
+    isCoarse,
+    coarseReason,
   };
 }
 
 export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Promise<PreciseLocation> {
   const {
-    timeoutMs = 10000,
-    targetAccuracyM = 15,
-    minSampleMs = 2000,
-    maxStaleAgeMs = 10000,
+    timeoutMs = 8000,
+    targetAccuracyM = 20,
+    minSampleMs = 1500,
     onProgress,
   } = options;
 
@@ -130,7 +146,69 @@ export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Pr
       resolve(computeWeightedLocation(samples));
     };
 
-    // Timeout safety net: resolve with weighted centroid of collected fresh fixes, else fail clearly
+    const handleIncomingPosition = (pos: GeolocationPosition) => {
+      if (settled) return;
+
+      const now = Date.now();
+      const { latitude, longitude, accuracy } = pos.coords;
+
+      // Discard invalid or null-island coordinates
+      if (
+        !Number.isFinite(latitude) ||
+        !Number.isFinite(longitude) ||
+        !Number.isFinite(accuracy) ||
+        accuracy <= 0 ||
+        (Math.abs(latitude) < 0.0001 && Math.abs(longitude) < 0.0001)
+      ) {
+        return;
+      }
+
+      // NOTE: Do NOT discard hardware GNSS fixes (accuracy <= 65m) based on pos.timestamp!
+      // On stationary iOS Safari / Android devices, the OS GNSS chip often emits a valid
+      // stationary satellite fix carrying the timestamp of when the device last moved (15-60s ago).
+      // Discarding it leaves only the fresh ±1414m cell/network grid reading.
+      samples.push({
+        latitude,
+        longitude,
+        accuracy,
+        receivedAt: now,
+      });
+
+      if (accuracy < bestAccuracy) {
+        bestAccuracy = accuracy;
+      }
+
+      const tier1Samples = samples.filter((s) => s.accuracy <= 65);
+      const crispCount = tier1Samples.filter((s) => s.accuracy <= 15).length;
+      const targetCount = tier1Samples.filter((s) => s.accuracy <= targetAccuracyM).length;
+      const elapsed = now - startTime;
+
+      onProgress?.({
+        accuracy,
+        bestAccuracy,
+        sampleCount: samples.length,
+        step:
+          crispCount >= 2 || (elapsed >= minSampleMs && targetCount >= 2)
+            ? 'High-precision GPS lock acquired'
+            : bestAccuracy <= 65
+            ? `Averaging satellite fixes (±${Math.round(bestAccuracy)}m)...`
+            : 'Waiting for hardware GPS satellite lock...',
+      });
+
+      // Early convergence ONLY on genuine Tier-1 satellite fixes (never on ±1414m coarse fixes):
+      // - Immediately once >= 2 crisp satellite samples (<= 15m) are collected
+      // - After minimum warmup (>= 1500ms) once >= 2 samples meet targetAccuracyM (<= 20m)
+      // - After 3200ms if we have at least 1 good hardware fix <= 35m
+      if (
+        crispCount >= 2 ||
+        (elapsed >= minSampleMs && targetCount >= 2) ||
+        (elapsed >= 3200 && bestAccuracy <= 35)
+      ) {
+        finishWithCluster();
+      }
+    };
+
+    // Timeout safety net: resolve with weighted centroid of best tier collected
     timer = setTimeout(() => {
       if (settled) return;
       if (samples.length > 0) {
@@ -139,102 +217,47 @@ export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Pr
         settled = true;
         cleanup();
         const timeoutErr = new Error(
-          'GPS satellite acquisition timed out without a fresh fix. Ensure GPS/Location Services are enabled and retry near a window or doorway.'
+          'GPS satellite acquisition timed out. Please retry near a window or doorway, or enter coordinates manually.'
         );
         (timeoutErr as any).code = 3;
         reject(timeoutErr);
       }
     }, timeoutMs);
 
+    const geoOptions: PositionOptions = {
+      enableHighAccuracy: true,
+      maximumAge: 0,
+      timeout: timeoutMs,
+    };
+
+    // Stage 1: Fire an immediate one-shot getCurrentPosition in parallel to force A-GPS wake-up on iOS/Android
+    try {
+      navigator.geolocation.getCurrentPosition(
+        handleIncomingPosition,
+        () => {
+          // Handled by watchPosition / timeout
+        },
+        geoOptions
+      );
+    } catch {}
+
+    // Stage 2: Continuous watchPosition stream for multi-sample satellite convergence
     try {
       watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          if (settled) return;
-
-          const now = Date.now();
-          const { latitude, longitude, accuracy } = pos.coords;
-
-          // Discard invalid or null-island coordinates
-          if (
-            !Number.isFinite(latitude) ||
-            !Number.isFinite(longitude) ||
-            !Number.isFinite(accuracy) ||
-            accuracy <= 0 ||
-            (latitude === 0 && longitude === 0)
-          ) {
-            return;
-          }
-
-          // Reject stale cached positions older than maxStaleAgeMs (default 10s)
-          const fixTimestamp = typeof pos.timestamp === 'number' && pos.timestamp > 0 ? pos.timestamp : now;
-          const ageMs = now - fixTimestamp;
-          if (ageMs > maxStaleAgeMs) {
-            onProgress?.({
-              accuracy,
-              bestAccuracy: Number.isFinite(bestAccuracy) ? bestAccuracy : accuracy,
-              sampleCount: samples.length,
-              step: 'Discarding stale cached fix...',
-            });
-            return;
-          }
-
-          samples.push({
-            latitude,
-            longitude,
-            accuracy,
-            timestamp: fixTimestamp,
-          });
-
-          if (accuracy < bestAccuracy) {
-            bestAccuracy = accuracy;
-          }
-
-          const crispCount = samples.filter((s) => s.accuracy <= 12).length;
-          const targetCount = samples.filter((s) => s.accuracy <= targetAccuracyM).length;
-          const elapsed = now - startTime;
-
-          onProgress?.({
-            accuracy,
-            bestAccuracy,
-            sampleCount: samples.length,
-            step:
-              crispCount >= 3 || (elapsed >= minSampleMs && targetCount >= 3)
-                ? 'High-precision GPS lock acquired'
-                : bestAccuracy <= targetAccuracyM
-                ? 'Averaging satellite fixes...'
-                : 'Refining GPS satellite signal...',
-          });
-
-          // Early convergence:
-          // - Immediately once >= 3 crisp satellite samples (<= 12m) are collected
-          // - Or after minimum warmup (>= 2000ms) once >= 3 samples meet targetAccuracyM
-          if (crispCount >= 3 || (elapsed >= minSampleMs && targetCount >= 3)) {
-            finishWithCluster();
-          }
-        },
+        handleIncomingPosition,
         (err) => {
           if (settled) return;
-          // Permission denied must fail immediately
           if (err?.code === 1) {
             settled = true;
             cleanup();
             reject(err);
             return;
           }
-          // If we already captured fresh samples before a transient GPS error, resolve with them
-          if (samples.length > 0) {
+          if (samples.length > 0 && bestAccuracy <= 65) {
             finishWithCluster();
-          } else {
-            settled = true;
-            cleanup();
-            reject(err);
           }
         },
-        {
-          enableHighAccuracy: true,
-          maximumAge: 0,
-          timeout: timeoutMs,
-        }
+        geoOptions
       );
     } catch (e) {
       if (!settled) {

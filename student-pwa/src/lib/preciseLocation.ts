@@ -10,7 +10,8 @@
 
 export const MAX_ALLOWED_ACCURACY_M = 65;
 export const TARGET_HIGH_ACCURACY_M = 20;
-export const MAX_FIX_AGE_MS = 10_000;
+export const MAX_FIX_AGE_MS = 60_000;
+export const MAX_FUTURE_SKEW_MS = 15_000;
 export const TELEPORT_DISTANCE_M = 100;
 export const TELEPORT_WINDOW_MS = 2_000;
 export const MAX_PLAUSIBLE_SPEED_MPS = 50;
@@ -96,8 +97,25 @@ export function haversineDistanceMeters(
 }
 
 /**
+ * Normalizes a GeolocationPosition.timestamp across mobile WebKit/Chromium quirks.
+ * Preserves valid Unix epoch timestamps (in ms) so validateGpsFix can detect stale fixes,
+ * while normalizing missing, zero, or monotonic boot-clock timestamps (< 1e12) to `nowMs`.
+ */
+export function normalizeGpsTimestamp(rawTimestamp: unknown, nowMs: number = Date.now()): number {
+  if (typeof rawTimestamp !== 'number' || !Number.isFinite(rawTimestamp) || rawTimestamp <= 0) {
+    return nowMs;
+  }
+  // Monotonic performance/boot timer values (< ~2001-09-09 in Unix epoch ms) are not wall-clock epochs
+  if (rawTimestamp < 1_000_000_000_000) {
+    return nowMs;
+  }
+  return rawTimestamp;
+}
+
+/**
  * Validates a single GNSS reading for coordinate integrity, anti-spoof artifacts,
- * freshness (<= 10s), and strict classroom accuracy ceiling (<= 65m).
+ * freshness (<= 60s to support stationary lecture hall hardware fixes), and strict
+ * classroom accuracy ceiling (<= 65m).
  */
 export function validateGpsFix(
   fix: GpsFix,
@@ -126,7 +144,7 @@ export function validateGpsFix(
     return { valid: false, reason: 'INVALID_ACCURACY', accuracy: fix.accuracy };
   }
 
-  // Validate freshness: discard stale cached OS fixes older than 10 seconds or future-forged timestamps
+  // Validate freshness: discard stale cached OS fixes older than 60 seconds or future-forged timestamps (> 15s skew)
   if (!Number.isFinite(fix.timestamp) || fix.timestamp <= 0) {
     return { valid: false, reason: 'STALE_FIX' };
   }
@@ -134,7 +152,7 @@ export function validateGpsFix(
   if (ageMs > MAX_FIX_AGE_MS) {
     return { valid: false, reason: 'STALE_FIX', ageMs, accuracy: fix.accuracy };
   }
-  if (ageMs < -MAX_FIX_AGE_MS) {
+  if (ageMs < -MAX_FUTURE_SKEW_MS) {
     return { valid: false, reason: 'FUTURE_TIMESTAMP', ageMs, accuracy: fix.accuracy };
   }
 
@@ -294,18 +312,23 @@ export function selectConsistentClusterAndAverage(
 
 /**
  * Clear student-facing message when phone GNSS cannot meet the <= 65m classroom accuracy gate.
+ * Includes tailored OS/browser instructions when accuracy >= 500m (e.g. ±1414m Approximate Location).
  */
 export function formatLowAccuracyMessage(
   measuredAccuracyM?: number | null,
   maxAllowedAccuracyM: number = MAX_ALLOWED_ACCURACY_M
 ): string {
-  const accLabel =
+  const hasValidAcc =
     measuredAccuracyM !== undefined &&
     measuredAccuracyM !== null &&
     Number.isFinite(measuredAccuracyM) &&
-    measuredAccuracyM > 0
-      ? `±${Math.round(measuredAccuracyM)}m`
-      : 'too coarse';
+    measuredAccuracyM > 0;
+  const accLabel = hasValidAcc ? `±${Math.round(measuredAccuracyM!)}m` : 'too coarse';
+
+  if (hasValidAcc && measuredAccuracyM! >= 500) {
+    return `GPS signal accuracy is ${accLabel} — must be ±${maxAllowedAccuracyM}m or better to verify inside this hall. Enable Precise Location in your browser/OS settings (iOS: Settings → Privacy & Security → Location Services → Safari Websites → Precise Location ON; Android: tap the address-bar lock/tune icon → Permissions → Location → Precise), move near a window, then retry.`;
+  }
+
   return `GPS signal accuracy is ${accLabel} — must be ±${maxAllowedAccuracyM}m or better to verify inside this hall. Move near a window or turn on Precise Location & Wi-Fi scanning, then retry.`;
 }
 
@@ -417,91 +440,112 @@ export function acquirePreciseLocation(options: AcquireLocationOptions = {}): Pr
       );
     }, timeoutMs);
 
-    try {
-      watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          if (settled) return;
-          const now = Date.now();
-          const fix: GpsFix = {
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            accuracy: pos.coords.accuracy,
-            timestamp: pos.timestamp || now,
-            receivedAt: now,
-          };
+    const handlePosition = (pos: GeolocationPosition) => {
+      if (settled) return;
+      const now = Date.now();
+      const fix: GpsFix = {
+        latitude: pos.coords.latitude,
+        longitude: pos.coords.longitude,
+        accuracy: pos.coords.accuracy,
+        timestamp: normalizeGpsTimestamp(pos.timestamp, now),
+        receivedAt: now,
+      };
 
-          const validation = validateGpsFix(fix, now, maxAllowedAccuracyM);
-          if (!validation.valid) {
-            if (validation.reason === 'COARSE_ACCURACY') {
-              if (bestRejectedAccuracyM === null || fix.accuracy < bestRejectedAccuracyM) {
-                bestRejectedAccuracyM = fix.accuracy;
-              }
-              onProgress?.({
-                accuracy: fix.accuracy,
-                step: `Coarse signal (±${Math.round(fix.accuracy)}m) — waiting for ±${maxAllowedAccuracyM}m or better...`,
-                sampleCount: validSamples.length,
-              });
-            } else if (validation.reason === 'STALE_FIX' || validation.reason === 'FUTURE_TIMESTAMP') {
-              sawStaleOnly = true;
-            } else {
-              sawInvalidSpoof = true;
-            }
-            return;
+      const validation = validateGpsFix(fix, now, maxAllowedAccuracyM);
+      if (!validation.valid) {
+        if (validation.reason === 'COARSE_ACCURACY') {
+          if (bestRejectedAccuracyM === null || fix.accuracy < bestRejectedAccuracyM) {
+            bestRejectedAccuracyM = fix.accuracy;
           }
-
-          if (lastAcceptedFix) {
-            const teleport = detectTeleportationJump(lastAcceptedFix, fix);
-            if (teleport.isTeleport) {
-              finishReject(
-                `Suspicious GPS jump detected (${Math.round(teleport.distanceM)}m in ${(teleport.dtMs / 1000).toFixed(1)}s). Disable any mock location apps, hold still, and retry.`,
-                'GPS_TELEPORT_DETECTED',
-                fix.accuracy
-              );
-              return;
-            }
-          }
-
-          lastAcceptedFix = fix;
-          validSamples.push(fix);
-          if (validSamples.length > 12) {
-            validSamples.shift();
-          }
-
-          const clustered = selectConsistentClusterAndAverage(validSamples, maxAllowedAccuracyM);
-          if (!clustered) return;
-
           onProgress?.({
-            accuracy: clustered.accuracy,
-            step:
-              clustered.accuracy <= targetAccuracyM && clustered.sampleCount >= MIN_CONSISTENT_SAMPLES_FAST_LOCK
-                ? 'High-precision GNSS lock confirmed'
-                : `Refining satellite lock (±${clustered.accuracy.toFixed(1)}m, ${clustered.sampleCount} sample${clustered.sampleCount === 1 ? '' : 's'})...`,
-            sampleCount: clustered.sampleCount,
+            accuracy: fix.accuracy,
+            step: `Coarse signal (±${Math.round(fix.accuracy)}m) — waiting for ±${maxAllowedAccuracyM}m or better...`,
+            sampleCount: validSamples.length,
           });
-
-          if (
-            clustered.sampleCount >= MIN_CONSISTENT_SAMPLES_FAST_LOCK &&
-            clustered.accuracy <= targetAccuracyM &&
-            clustered.spreadM <= MAX_FAST_LOCK_SPREAD_M
-          ) {
-            finishResolve(clustered);
-          }
-        },
-        (geoErr) => {
-          if (settled) return;
-          if (geoErr?.code === 1) {
-            finishReject(
-              'Location permission was denied. Please allow Precise Location access and retry.',
-              'PERMISSION_DENIED'
-            );
-          }
-        },
-        {
-          enableHighAccuracy: true,
-          maximumAge: 0,
-          timeout: timeoutMs,
+        } else if (validation.reason === 'STALE_FIX' || validation.reason === 'FUTURE_TIMESTAMP') {
+          sawStaleOnly = true;
+        } else {
+          sawInvalidSpoof = true;
         }
-      );
+        return;
+      }
+
+      // Deduplicate identical hardware reading delivered simultaneously by getCurrentPosition + watchPosition
+      if (
+        lastAcceptedFix &&
+        fix.timestamp === lastAcceptedFix.timestamp &&
+        fix.latitude === lastAcceptedFix.latitude &&
+        fix.longitude === lastAcceptedFix.longitude &&
+        fix.accuracy === lastAcceptedFix.accuracy
+      ) {
+        return;
+      }
+
+      if (lastAcceptedFix) {
+        const teleport = detectTeleportationJump(lastAcceptedFix, fix);
+        if (teleport.isTeleport) {
+          finishReject(
+            `Suspicious GPS jump detected (${Math.round(teleport.distanceM)}m in ${(teleport.dtMs / 1000).toFixed(1)}s). Disable any mock location apps, hold still, and retry.`,
+            'GPS_TELEPORT_DETECTED',
+            fix.accuracy
+          );
+          return;
+        }
+      }
+
+      lastAcceptedFix = fix;
+      validSamples.push(fix);
+      if (validSamples.length > 12) {
+        validSamples.shift();
+      }
+
+      const clustered = selectConsistentClusterAndAverage(validSamples, maxAllowedAccuracyM);
+      if (!clustered) return;
+
+      onProgress?.({
+        accuracy: clustered.accuracy,
+        step:
+          clustered.accuracy <= targetAccuracyM && clustered.sampleCount >= MIN_CONSISTENT_SAMPLES_FAST_LOCK
+            ? 'High-precision GNSS lock confirmed'
+            : `Refining satellite lock (±${clustered.accuracy.toFixed(1)}m, ${clustered.sampleCount} sample${clustered.sampleCount === 1 ? '' : 's'})...`,
+        sampleCount: clustered.sampleCount,
+      });
+
+      if (
+        clustered.sampleCount >= MIN_CONSISTENT_SAMPLES_FAST_LOCK &&
+        clustered.accuracy <= targetAccuracyM &&
+        clustered.spreadM <= MAX_FAST_LOCK_SPREAD_M
+      ) {
+        finishResolve(clustered);
+      }
+    };
+
+    const handleGeoError = (geoErr: GeolocationPositionError) => {
+      if (settled) return;
+      if (geoErr?.code === 1) {
+        finishReject(
+          'Location permission was denied. Please allow Precise Location access and retry.',
+          'PERMISSION_DENIED'
+        );
+      }
+    };
+
+    const geoOptions: PositionOptions = {
+      enableHighAccuracy: true,
+      maximumAge: 0,
+      timeout: timeoutMs,
+    };
+
+    try {
+      // Fire getCurrentPosition in parallel with watchPosition to force an immediate A-GPS hardware poll on iOS WebKit & Android Chrome
+      if (typeof navigator.geolocation.getCurrentPosition === 'function') {
+        try {
+          navigator.geolocation.getCurrentPosition(handlePosition, handleGeoError, geoOptions);
+        } catch {
+          // Ignore synchronous getCurrentPosition errors; watchPosition handles primary stream
+        }
+      }
+      watchId = navigator.geolocation.watchPosition(handlePosition, handleGeoError, geoOptions);
     } catch (e: any) {
       finishReject(e?.message || 'Could not start GPS receiver.', 'GPS_ERROR');
     }
