@@ -73,6 +73,7 @@ export const AttendVideoPage: React.FC = () => {
         fingerprintHash: fpHash,
         local_device_id: deviceId,
         incognito_signal: Boolean(attempt.is_incognito),
+        ...(attempt.liveness_proof ? { liveness_proof: attempt.liveness_proof } : {}),
       };
 
       // 4. Submit attendance via Edge Function

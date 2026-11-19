@@ -1,4 +1,4 @@
-import type { AttemptSessionState, AttendanceReceipt, SessionData, StudentData } from '../types';
+import type { AttemptSessionState, AttendanceReceipt, SessionData, StudentData, LivenessProof } from '../types';
 import { generateIdempotencyKey } from './crypto';
 
 const ATTEMPT_KEY = 'adun_attempt_state';
@@ -73,13 +73,18 @@ export function updateAttemptLocation(location: {
   return updated;
 }
 
-export function updateAttemptSelfie(selfieDataUrl: string, selfiePath?: string): AttemptSessionState | null {
+export function updateAttemptSelfie(
+  selfieDataUrl: string,
+  selfiePath?: string,
+  livenessProof?: LivenessProof
+): AttemptSessionState | null {
   const current = getAttemptState();
   if (!current) return null;
   const updated: AttemptSessionState = {
     ...current,
     selfie_data_url: selfieDataUrl,
     selfie_path: selfiePath,
+    ...(livenessProof ? { liveness_proof: livenessProof } : {}),
   };
   saveAttemptState(updated);
   return updated;

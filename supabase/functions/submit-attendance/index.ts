@@ -121,6 +121,9 @@ Deno.serve(async (req: Request) => {
     if ('selfie_data_url' in deviceInfo) {
       delete deviceInfo.selfie_data_url;
     }
+    if (body?.liveness_proof && !deviceInfo.liveness_proof) {
+      deviceInfo.liveness_proof = body.liveness_proof;
+    }
 
     const userAgent = req.headers.get('user-agent') ?? (deviceInfo?.user_agent as string) ?? null;
     const clientIp =

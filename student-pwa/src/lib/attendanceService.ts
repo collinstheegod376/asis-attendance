@@ -187,7 +187,7 @@ export const attendanceService = {
    * Uploads selfie image proof to secure private bucket via server-side Edge Function.
    * Returns canonical storage path. Never fabricates a path on failure.
    */
-  async uploadSelfie(attemptToken: string, imageBase64: string): Promise<UploadSelfieResponse> {
+  async uploadSelfie(attemptToken: string, imageBase64: string, livenessProof?: unknown): Promise<UploadSelfieResponse> {
     const res = await fetch('/api/upload-selfie', {
       method: 'POST',
       headers: {
@@ -197,6 +197,7 @@ export const attendanceService = {
       body: JSON.stringify({
         attempt_token: attemptToken,
         image_base64: imageBase64,
+        ...(livenessProof ? { liveness_proof: livenessProof } : {}),
       }),
     });
 

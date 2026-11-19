@@ -41,10 +41,19 @@ export interface AttemptSessionState {
   };
   selfie_data_url?: string;
   selfie_path?: string;
+  liveness_proof?: LivenessProof;
   video_watched?: boolean;
   fingerprint_hash?: string;
   is_incognito?: boolean;
   receipt?: AttendanceReceipt;
+}
+
+export interface LivenessProof {
+  challenge_type: 'blink' | 'turn_left' | 'smile';
+  challenge_passed: boolean;
+  duration_ms: number;
+  confidence_score: number;
+  timestamp: string;
 }
 
 export interface AttendanceReceipt {

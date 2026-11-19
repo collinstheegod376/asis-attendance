@@ -156,13 +156,77 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // 4. Upload to storage bucket 'selfies' with upsert: false using service role
-    const { data: uploadData, error: uploadErr } = await supabase.storage
+    // Size limit check (max 5 MB, min 1 KB)
+    const MAX_SIZE = 5 * 1024 * 1024; // 5 MB
+    const MIN_SIZE = 1024; // 1 KB
+    if (imageBytes.length > MAX_SIZE) {
+      return new Response(JSON.stringify({
+        error: 'FILE_TOO_LARGE',
+        message: `Selfie image exceeds maximum allowed size of 5 MB (actual: ${Math.round(imageBytes.length / 1024)} KB).`,
+      }), {
+        status: 400,
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (imageBytes.length < MIN_SIZE) {
+      return new Response(JSON.stringify({
+        error: 'FILE_TOO_SMALL',
+        message: 'Selfie image payload is too small or corrupt.',
+      }), {
+        status: 400,
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Format validation via magic bytes (JPEG: FF D8 FF, PNG: 89 50 4E 47, WebP: RIFF...WEBP)
+    let contentType = 'image/jpeg';
+    const isJpeg = imageBytes.length >= 3 && imageBytes[0] === 0xFF && imageBytes[1] === 0xD8 && imageBytes[2] === 0xFF;
+    const isPng = imageBytes.length >= 8 && imageBytes[0] === 0x89 && imageBytes[1] === 0x50 && imageBytes[2] === 0x4E && imageBytes[3] === 0x47;
+    const isWebP = imageBytes.length >= 12 &&
+      imageBytes[0] === 0x52 && imageBytes[1] === 0x49 && imageBytes[2] === 0x46 && imageBytes[3] === 0x46 &&
+      imageBytes[8] === 0x57 && imageBytes[9] === 0x45 && imageBytes[10] === 0x42 && imageBytes[11] === 0x50;
+
+    if (isJpeg) {
+      contentType = 'image/jpeg';
+    } else if (isPng) {
+      contentType = 'image/png';
+    } else if (isWebP) {
+      contentType = 'image/webp';
+    } else {
+      return new Response(JSON.stringify({
+        error: 'INVALID_IMAGE_FORMAT',
+        message: 'Unsupported image format. Allowed formats are JPEG, PNG, or WebP.',
+      }), {
+        status: 400,
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // 4. Upload to storage bucket ('selfies' primary with fallback to 'attendance')
+    let uploadData: any = null;
+    let uploadErr: any = null;
+
+    const primaryUpload = await supabase.storage
       .from('selfies')
       .upload(canonicalPath, imageBytes, {
-        contentType: 'image/jpeg',
+        contentType,
         upsert: false,
       });
+
+    if (primaryUpload.error && primaryUpload.error.message?.toLowerCase().includes('bucket not found')) {
+      const fallbackUpload = await supabase.storage
+        .from('attendance')
+        .upload(canonicalPath, imageBytes, {
+          contentType,
+          upsert: false,
+        });
+      uploadData = fallbackUpload.data;
+      uploadErr = fallbackUpload.error;
+    } else {
+      uploadData = primaryUpload.data;
+      uploadErr = primaryUpload.error;
+    }
 
     // 5. Fail closed if storage write fails (never return a fabricated path)
     if (uploadErr || !uploadData) {
@@ -176,10 +240,13 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // 6. Update attempt step to 'selfie'
+    // 6. Update attempt step to 'selfie' and persist selfie_path on attempt row
     await supabase
       .from('attendance_attempts')
-      .update({ step: 'selfie' })
+      .update({
+        step: 'selfie',
+        selfie_path: canonicalPath,
+      })
       .eq('id', attempt.id);
 
     // 7. Return canonical selfie path contract

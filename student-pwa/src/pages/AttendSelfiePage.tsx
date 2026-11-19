@@ -5,6 +5,7 @@ import { Header } from '../components/Header';
 import { CameraHUD } from '../components/CameraHUD';
 import { getAttemptState, updateAttemptSelfie, clearAttemptState } from '../lib/attemptState';
 import { attendanceService, ApiError } from '../lib/attendanceService';
+import type { LivenessProof } from '../types';
 
 export const AttendSelfiePage: React.FC = () => {
   const navigate = useNavigate();
@@ -13,6 +14,7 @@ export const AttendSelfiePage: React.FC = () => {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [capturedDataUrl, setCapturedDataUrl] = useState<string | null>(null);
+  const [capturedProof, setCapturedProof] = useState<LivenessProof | undefined>(undefined);
 
   // Step Guards (Fixes QA-06)
   useEffect(() => {
@@ -33,12 +35,13 @@ export const AttendSelfiePage: React.FC = () => {
     }
   }, [attempt, navigate]);
 
-  const handleCapture = (dataUrl: string) => {
+  const handleCapture = (dataUrl: string, proof?: LivenessProof) => {
     setCapturedDataUrl(dataUrl);
+    setCapturedProof(proof);
     setUploadError(null);
   };
 
-  const uploadCapturedSelfie = async (dataUrl: string) => {
+  const uploadCapturedSelfie = async (dataUrl: string, proof?: LivenessProof) => {
     if (!attempt?.attempt_token) {
       clearAttemptState();
       navigate('/expired', { replace: true });
@@ -50,14 +53,14 @@ export const AttendSelfiePage: React.FC = () => {
 
     try {
       // POST image as base64 to server Edge Function /api/upload-selfie
-      const res = await attendanceService.uploadSelfie(attempt.attempt_token, dataUrl);
+      const res = await attendanceService.uploadSelfie(attempt.attempt_token, dataUrl, proof);
 
       if (!res.selfie_path) {
         throw new Error('Server did not return a valid storage path.');
       }
 
-      // Store canonical selfie_path and dataUrl in attempt state
-      updateAttemptSelfie(dataUrl, res.selfie_path);
+      // Store canonical selfie_path, dataUrl, and liveness_proof in attempt state
+      updateAttemptSelfie(dataUrl, res.selfie_path, proof);
 
       // Navigate to instructional video step
       navigate('/attend/video', { replace: false });
@@ -80,18 +83,27 @@ export const AttendSelfiePage: React.FC = () => {
     }
   };
 
-  const handleAutoSubmit = (dataUrl: string) => {
-    uploadCapturedSelfie(dataUrl);
+  const handleAutoSubmit = (dataUrl: string, proof?: LivenessProof) => {
+    uploadCapturedSelfie(dataUrl, proof);
   };
 
   const handleRetryUpload = () => {
     if (capturedDataUrl) {
-      uploadCapturedSelfie(capturedDataUrl);
+      uploadCapturedSelfie(capturedDataUrl, capturedProof);
     }
   };
 
+  const handleRetake = () => {
+    setCapturedDataUrl(null);
+    setCapturedProof(undefined);
+    setUploadError(null);
+  };
+
   const handleCameraError = () => {
-    navigate('/unsupported');
+    // Only redirect if camera hardware or API is completely unsupported
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.isSecureContext) {
+      navigate('/unsupported', { replace: true });
+    }
   };
 
   return (
@@ -109,6 +121,7 @@ export const AttendSelfiePage: React.FC = () => {
           onCapture={handleCapture}
           onAutoSubmit={handleAutoSubmit}
           onCameraError={handleCameraError}
+          onRetake={handleRetake}
         />
 
         {uploading && (
