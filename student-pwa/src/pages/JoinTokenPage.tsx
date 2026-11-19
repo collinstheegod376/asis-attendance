@@ -5,6 +5,7 @@ import { AdunLogo } from '../components/AdunLogo';
 import { attendanceService, ApiError } from '../lib/attendanceService';
 import { getAttemptState, initAttemptState, clearAttemptState } from '../lib/attemptState';
 import { detectIncognito } from '../lib/deviceFingerprint';
+import { resolveLocationEnabled } from '../lib/preciseLocation';
 
 export const JoinTokenPage: React.FC = () => {
   const { token } = useParams<{ token: string }>();
@@ -84,14 +85,8 @@ export const JoinTokenPage: React.FC = () => {
 
         const response = await attendanceService.validateSessionToken(cleanToken, reuseAttemptToken);
 
-        const searchParams = new URLSearchParams(window.location.search);
-        const locParam = searchParams.get('loc');
-        let isLocationEnabled = Boolean(response.location_enabled);
-        if (locParam === '0' || locParam === 'false') {
-          isLocationEnabled = false;
-        } else if (locParam === '1' || locParam === 'true') {
-          isLocationEnabled = true;
-        }
+        // Strictly trust the authoritative server flag; never allow URL query params (e.g. ?loc=0) to bypass location verification
+        const isLocationEnabled = resolveLocationEnabled(response.location_enabled);
 
         // Success: initialize / reuse attempt state in sessionStorage
         initAttemptState(

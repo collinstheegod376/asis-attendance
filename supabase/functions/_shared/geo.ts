@@ -3,7 +3,35 @@
  */
 
 /**
+ * Strictly parses a finite numeric value.
+ * Rejects null, undefined, booleans, empty strings, arrays, objects, NaN, and Infinity.
+ */
+export function parseStrictFiniteNumber(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '') return null;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+/**
+ * Validates geographic coordinates and rejects Null Island (0, 0).
+ */
+export function isValidCoordinatePair(latitude: number, longitude: number): boolean {
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return false;
+  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return false;
+  if (Math.abs(latitude) < 1e-6 && Math.abs(longitude) < 1e-6) return false;
+  return true;
+}
+
+/**
  * Calculates Haversine distance between two coordinates in metres.
+ * Clamps intermediate 'a' to [0, 1] to prevent floating-point NaN domain errors.
  */
 export function haversineDistanceMeters(
   lat1: number,
@@ -19,9 +47,10 @@ export function haversineDistanceMeters(
   const phi1 = toRad(lat1);
   const phi2 = toRad(lat2);
 
-  const a =
+  const rawA =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const a = Math.min(1, Math.max(0, rawA));
 
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;

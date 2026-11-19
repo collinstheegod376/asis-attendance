@@ -415,7 +415,7 @@ export const ClassroomProjectorView: React.FC = () => {
                   </p>
                   <p className="text-xs text-slate-500 truncate">
                     {hasLoc
-                      ? `${session.location_name || 'Classroom location'} (${session.radius_m || 350}m boundary)`
+                      ? `${session.location_name || 'Classroom location'} (${session.radius_m || 50}m boundary)`
                       : 'Attendance check-in'}
                   </p>
                 </div>

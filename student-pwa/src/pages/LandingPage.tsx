@@ -39,13 +39,14 @@ export const LandingPage: React.FC = () => {
     try {
       if (decodedText.includes('/join/')) {
         const parts = decodedText.split('/join/');
-        const tokenAndQuery = parts[1]?.split('#')[0]?.trim();
-        if (tokenAndQuery) {
-          navigate(`/join/${tokenAndQuery}`);
+        // Extract only the session token segment; never carry untrusted query params (e.g. ?loc=0)
+        const cleanJoinToken = parts[1]?.split(/[?#]/)[0]?.trim();
+        if (cleanJoinToken) {
+          navigate(`/join/${cleanJoinToken}`);
           return;
         }
       }
-      const clean = decodedText.trim();
+      const clean = decodedText.split(/[?#]/)[0]?.trim();
       if (clean) {
         navigate(`/join/${clean}`);
       }

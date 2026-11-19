@@ -73,6 +73,24 @@ export function updateAttemptLocation(location: {
   return updated;
 }
 
+export function clearAttemptLocation(): AttemptSessionState | null {
+  const current = getAttemptState();
+  if (!current) return null;
+  const { location: _removed, ...rest } = current;
+  saveAttemptState(rest);
+  return rest;
+}
+
+/**
+ * Strict step guard helper: when location verification is enabled on the session,
+ * the student MUST have a server-confirmed `location.inside_boundary === true`.
+ */
+export function isLocationRequirementSatisfied(attempt: AttemptSessionState | null): boolean {
+  if (!attempt) return false;
+  if (attempt.session?.location_enabled !== true) return true;
+  return attempt.location?.inside_boundary === true;
+}
+
 export function updateAttemptSelfie(
   selfieDataUrl: string,
   selfiePath?: string,

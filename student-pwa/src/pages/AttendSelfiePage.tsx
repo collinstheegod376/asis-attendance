@@ -3,7 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import { AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 import { Header } from '../components/Header';
 import { CameraHUD } from '../components/CameraHUD';
-import { getAttemptState, updateAttemptSelfie, clearAttemptState } from '../lib/attemptState';
+import {
+  getAttemptState,
+  updateAttemptSelfie,
+  clearAttemptLocation,
+  clearAttemptState,
+  isLocationRequirementSatisfied,
+} from '../lib/attemptState';
 import { attendanceService, ApiError } from '../lib/attendanceService';
 import type { LivenessProof } from '../types';
 
@@ -16,24 +22,25 @@ export const AttendSelfiePage: React.FC = () => {
   const [capturedDataUrl, setCapturedDataUrl] = useState<string | null>(null);
   const [capturedProof, setCapturedProof] = useState<LivenessProof | undefined>(undefined);
 
-  // Step Guards (Fixes QA-06)
+  // Step Guards (Fixes QA-06): Strictly require verified inside_boundary === true when location_enabled is true
   useEffect(() => {
-    if (!attempt || !attempt.attempt_id || !attempt.attempt_token) {
+    const currentAttempt = getAttemptState();
+    if (!currentAttempt || !currentAttempt.attempt_id || !currentAttempt.attempt_token) {
       clearAttemptState();
       navigate('/', { replace: true });
       return;
     }
 
-    if (!attempt.student) {
+    if (!currentAttempt.student) {
       navigate('/attend/identity', { replace: true });
       return;
     }
 
-    if (Boolean(attempt.session?.location_enabled) && !attempt.location) {
+    if (!isLocationRequirementSatisfied(currentAttempt)) {
       navigate('/attend/location', { replace: true });
       return;
     }
-  }, [attempt, navigate]);
+  }, [navigate]);
 
   const handleCapture = (dataUrl: string, proof?: LivenessProof) => {
     setCapturedDataUrl(dataUrl);
@@ -42,9 +49,15 @@ export const AttendSelfiePage: React.FC = () => {
   };
 
   const uploadCapturedSelfie = async (dataUrl: string, proof?: LivenessProof) => {
-    if (!attempt?.attempt_token) {
+    const currentAttempt = getAttemptState();
+    if (!currentAttempt?.attempt_token) {
       clearAttemptState();
       navigate('/expired', { replace: true });
+      return;
+    }
+
+    if (!isLocationRequirementSatisfied(currentAttempt)) {
+      navigate('/attend/location', { replace: true });
       return;
     }
 
@@ -53,7 +66,7 @@ export const AttendSelfiePage: React.FC = () => {
 
     try {
       // POST image as base64 to server Edge Function /api/upload-selfie
-      const res = await attendanceService.uploadSelfie(attempt.attempt_token, dataUrl, proof);
+      const res = await attendanceService.uploadSelfie(currentAttempt.attempt_token, dataUrl, proof);
 
       if (!res.selfie_path) {
         throw new Error('Server did not return a valid storage path.');
@@ -72,6 +85,16 @@ export const AttendSelfiePage: React.FC = () => {
         if (err.code === 'ATTEMPT_EXPIRED' || err.status === 410) {
           clearAttemptState();
           navigate('/expired', { replace: true });
+          return;
+        }
+        if (
+          err.code === 'LOCATION_REQUIRED' ||
+          err.code === 'OUTSIDE_CLASSROOM_BOUNDARY' ||
+          err.code === 'OUTSIDE_CAMPUS_BOUNDARY' ||
+          err.code === 'LOW_ACCURACY'
+        ) {
+          clearAttemptLocation();
+          navigate('/attend/location', { replace: true });
           return;
         }
         setUploadError(err.message || 'Failed to upload selfie proof to university storage.');
@@ -105,6 +128,16 @@ export const AttendSelfiePage: React.FC = () => {
       navigate('/unsupported', { replace: true });
     }
   };
+
+  if (
+    !attempt ||
+    !attempt.attempt_id ||
+    !attempt.attempt_token ||
+    !attempt.student ||
+    !isLocationRequirementSatisfied(attempt)
+  ) {
+    return null;
+  }
 
   return (
     <div className="min-h-dvh min-h-[100dvh] bg-slate-50 flex flex-col items-center overflow-x-hidden">

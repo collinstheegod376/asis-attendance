@@ -196,7 +196,14 @@ Deno.serve(async (req: Request) => {
       const status =
         errCode === 'PROXY_DETECTED' || result.reference_code === 'BIND-203'
           ? 403
-          : errCode === 'DEVICE_CHECK_FAILED' || errCode === 'OUTSIDE_CLASSROOM_BOUNDARY' || errCode === 'OUTSIDE_CAMPUS_BOUNDARY'
+          : errCode === 'DEVICE_CHECK_FAILED' ||
+            errCode === 'OUTSIDE_CLASSROOM_BOUNDARY' ||
+            errCode === 'OUTSIDE_CAMPUS_BOUNDARY' ||
+            errCode === 'LOW_ACCURACY' ||
+            errCode === 'LOCATION_MISSING' ||
+            errCode === 'INVALID_ACCURACY' ||
+            errCode === 'INVALID_STEP' ||
+            errCode === 'SESSION_CLOSED'
           ? 403
           : errCode === 'ATTEMPT_EXPIRED' || errCode === 'SESSION_EXPIRED'
           ? 410
@@ -209,8 +216,9 @@ Deno.serve(async (req: Request) => {
         action: result.action,
         reference_code: result.reference_code,
         ...(result.distance_m !== undefined ? { distance_m: result.distance_m } : {}),
-        ...(result.effective_distance_m !== undefined ? { effective_distance_m: result.effective_distance_m } : {}),
         ...(result.allowed_radius_m !== undefined ? { allowed_radius_m: result.allowed_radius_m } : {}),
+        ...(result.accuracy_m !== undefined ? { accuracy_m: result.accuracy_m } : {}),
+        ...(result.max_accuracy_m !== undefined ? { max_accuracy_m: result.max_accuracy_m } : {}),
       }), {
         status,
         headers: { ...baseHeaders, 'Content-Type': 'application/json' },

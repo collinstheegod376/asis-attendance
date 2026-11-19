@@ -2,7 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ShieldAlert, ArrowRight, Loader2, Info } from 'lucide-react';
 import { Header } from '../components/Header';
-import { getAttemptState, updateAttemptReceipt, clearAttemptState } from '../lib/attemptState';
+import {
+  getAttemptState,
+  updateAttemptReceipt,
+  clearAttemptLocation,
+  clearAttemptState,
+  isLocationRequirementSatisfied,
+} from '../lib/attemptState';
 import { attendanceService, ApiError } from '../lib/attendanceService';
 import { generateDeviceFingerprint } from '../lib/deviceFingerprint';
 import { getOrCreateDeviceId } from '../lib/crypto';
@@ -16,32 +22,39 @@ export const AttendVideoPage: React.FC = () => {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [needsLocationRecheck, setNeedsLocationRecheck] = useState(false);
 
-  // Step Guards (Fixes QA-06)
+  // Step Guards (Fixes QA-06): Strictly require verified inside_boundary === true when location_enabled is true
   useEffect(() => {
-    if (!attempt || !attempt.attempt_id || !attempt.attempt_token) {
+    const currentAttempt = getAttemptState();
+    if (!currentAttempt || !currentAttempt.attempt_id || !currentAttempt.attempt_token) {
       clearAttemptState();
       navigate('/', { replace: true });
       return;
     }
 
-    if (!attempt.student) {
+    if (!currentAttempt.student) {
       navigate('/attend/identity', { replace: true });
       return;
     }
 
-    if (Boolean(attempt.session?.location_enabled) && !attempt.location) {
+    if (!isLocationRequirementSatisfied(currentAttempt)) {
       navigate('/attend/location', { replace: true });
       return;
     }
 
-    if (!attempt.selfie_path) {
+    if (!currentAttempt.selfie_path) {
       navigate('/attend/selfie', { replace: true });
       return;
     }
-  }, [attempt, navigate]);
+  }, [navigate]);
 
   const handleSubmit = async () => {
-    if (submitting || !attempt || !attempt.attempt_token || !attempt.selfie_path) return;
+    const currentAttempt = getAttemptState();
+    if (submitting || !currentAttempt || !currentAttempt.attempt_token || !currentAttempt.selfie_path) return;
+
+    if (!isLocationRequirementSatisfied(currentAttempt)) {
+      navigate('/attend/location', { replace: true });
+      return;
+    }
 
     setSubmitting(true);
     setSubmitError(null);
@@ -49,10 +62,10 @@ export const AttendVideoPage: React.FC = () => {
 
     try {
       // 1. Stable idempotency key from attemptState (Fixes QA-11)
-      const idempotencyKey = attempt.idempotency_key;
+      const idempotencyKey = currentAttempt.idempotency_key;
 
       // 2. Resolve deterministic fingerprint hash
-      let fpHash = attempt.fingerprint_hash;
+      let fpHash = currentAttempt.fingerprint_hash;
       if (!fpHash) {
         const fp = await generateDeviceFingerprint();
         if (fp.success && fp.hash) {
@@ -74,14 +87,14 @@ export const AttendVideoPage: React.FC = () => {
         submittedAt: new Date().toISOString(),
         fingerprintHash: fpHash,
         local_device_id: deviceId,
-        incognito_signal: Boolean(attempt.is_incognito),
-        ...(attempt.liveness_proof ? { liveness_proof: attempt.liveness_proof } : {}),
+        incognito_signal: Boolean(currentAttempt.is_incognito),
+        ...(currentAttempt.liveness_proof ? { liveness_proof: currentAttempt.liveness_proof } : {}),
       };
 
       // 4. Submit attendance via Edge Function
       const result = await attendanceService.submitAttendance({
-        attemptToken: attempt.attempt_token,
-        selfiePath: attempt.selfie_path,
+        attemptToken: currentAttempt.attempt_token,
+        selfiePath: currentAttempt.selfie_path,
         fingerprintHash: fpHash,
         deviceInfo,
         idempotencyKey,
@@ -92,11 +105,11 @@ export const AttendVideoPage: React.FC = () => {
         receipt_id: result.receipt_id,
         status: result.status || 'present',
         signed_at: result.signed_at || new Date().toISOString(),
-        course_code: attempt.session?.course_code || 'ADUN COURSE',
-        course_title: attempt.session?.course_title || 'Academic Lecture',
-        student_name: `${attempt.student?.surname}, ${attempt.student?.first_name}`,
-        matric_no: attempt.student?.matric_no || '',
-        selfie_preview: attempt.selfie_data_url,
+        course_code: currentAttempt.session?.course_code || 'ADUN COURSE',
+        course_title: currentAttempt.session?.course_title || 'Academic Lecture',
+        student_name: `${currentAttempt.student?.surname}, ${currentAttempt.student?.first_name}`,
+        matric_no: currentAttempt.student?.matric_no || '',
+        selfie_preview: currentAttempt.selfie_data_url,
       };
 
       updateAttemptReceipt(receipt);
@@ -123,11 +136,11 @@ export const AttendVideoPage: React.FC = () => {
               receipt_id: err.data.receipt_id,
               status: err.data.status || 'present',
               signed_at: err.data.signed_at || new Date().toISOString(),
-              course_code: attempt.session?.course_code || 'ADUN COURSE',
-              course_title: attempt.session?.course_title || 'Academic Lecture',
-              student_name: `${attempt.student?.surname}, ${attempt.student?.first_name}`,
-              matric_no: attempt.student?.matric_no || '',
-              selfie_preview: attempt.selfie_data_url,
+              course_code: currentAttempt.session?.course_code || 'ADUN COURSE',
+              course_title: currentAttempt.session?.course_title || 'Academic Lecture',
+              student_name: `${currentAttempt.student?.surname}, ${currentAttempt.student?.first_name}`,
+              matric_no: currentAttempt.student?.matric_no || '',
+              selfie_preview: currentAttempt.selfie_data_url,
             };
             updateAttemptReceipt(receipt);
             navigate('/attend/confirmation');
@@ -187,6 +200,7 @@ export const AttendVideoPage: React.FC = () => {
           errCode === 'LOCATION_MISSING' ||
           errCode === 'LOW_ACCURACY'
         ) {
+          clearAttemptLocation();
           setNeedsLocationRecheck(true);
           setSubmitError(
             err.message ||
@@ -203,6 +217,17 @@ export const AttendVideoPage: React.FC = () => {
       setSubmitting(false);
     }
   };
+
+  if (
+    !attempt ||
+    !attempt.attempt_id ||
+    !attempt.attempt_token ||
+    !attempt.student ||
+    (!isLocationRequirementSatisfied(attempt) && !needsLocationRecheck) ||
+    !attempt.selfie_path
+  ) {
+    return null;
+  }
 
   return (
     <div className="min-h-dvh min-h-[100dvh] bg-slate-50 flex flex-col items-center overflow-x-hidden">
@@ -324,7 +349,7 @@ export const AttendVideoPage: React.FC = () => {
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={submitting}
+            disabled={submitting || needsLocationRecheck}
             className="w-full min-h-[48px] flex items-center justify-center gap-2 bg-[#1E40AF] hover:bg-blue-800 active:bg-blue-900 disabled:bg-slate-300 text-white font-semibold text-xs py-3.5 sm:py-4 px-4 rounded-xl shadow-md transition-all active:scale-[0.99]"
           >
             {submitting ? (

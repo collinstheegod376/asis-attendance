@@ -38,7 +38,7 @@ export const AdminHomePage: React.FC = () => {
     campus_center_lat: 6.2235,
     campus_center_lng: 6.6180,
     campus_radius_m: 1500,
-    location_accuracy_threshold_m: 50,
+    location_accuracy_threshold_m: 65,
     default_session_duration_minutes: 60,
     max_session_duration_minutes: 180,
     selfie_retention_days: 90,

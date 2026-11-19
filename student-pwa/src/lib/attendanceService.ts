@@ -4,6 +4,7 @@
  * Never calls Supabase tables or RPCs directly.
  * Fixes: PERF-04, PERF-05, SEC-01, SEC-02, SEC-05, SEC-18
  */
+import { MAX_ALLOWED_ACCURACY_M, formatLowAccuracyMessage } from './preciseLocation';
 
 export interface ValidateSessionTokenResponse {
   attempt_id: string;
@@ -36,7 +37,9 @@ export interface VerifyLocationResponse {
   error?: string;
   message?: string;
   distance_m?: number;
+  effective_distance_m?: number;
   allowed_radius_m?: number;
+  accuracy_buffer_m?: number;
 }
 
 export interface UploadSelfieResponse {
@@ -153,7 +156,8 @@ export const attendanceService = {
 
   /**
    * Verifies GPS coordinates against institutional campus / classroom boundary.
-   * Fail closed: returns error if coordinates are invalid or outside boundary.
+   * Fail closed: rejects invalid/spoofed coordinates or coarse accuracy (> 65m) client-side
+   * before sending to backend, and throws on boundary or network failure.
    */
   async verifyLocation(params: {
     attemptToken: string;
@@ -162,6 +166,39 @@ export const attendanceService = {
     longitude: number;
     accuracyM: number;
   }): Promise<VerifyLocationResponse> {
+    if (
+      !Number.isFinite(params.latitude) ||
+      !Number.isFinite(params.longitude) ||
+      params.latitude < -90 ||
+      params.latitude > 90 ||
+      params.longitude < -180 ||
+      params.longitude > 180 ||
+      (Math.abs(params.latitude) < 0.0001 && Math.abs(params.longitude) < 0.0001)
+    ) {
+      throw new ApiError(
+        400,
+        'INVALID_COORDINATES',
+        'Invalid GPS coordinates detected. Disable mock location apps and retry.'
+      );
+    }
+
+    if (!Number.isFinite(params.accuracyM) || params.accuracyM <= 0) {
+      throw new ApiError(
+        400,
+        'INVALID_ACCURACY',
+        'Invalid GPS accuracy reported by device. Disable mock location apps and retry.'
+      );
+    }
+
+    if (params.accuracyM > MAX_ALLOWED_ACCURACY_M) {
+      throw new ApiError(
+        403,
+        'LOW_ACCURACY',
+        formatLowAccuracyMessage(params.accuracyM, MAX_ALLOWED_ACCURACY_M),
+        { accuracy_m: params.accuracyM }
+      );
+    }
+
     const res = await fetch('/api/verify-location', {
       method: 'POST',
       headers: {
@@ -183,8 +220,14 @@ export const attendanceService = {
       if (json.distance_m !== undefined && json.distance_m !== null) {
         json.distance_m = Number(json.distance_m);
       }
+      if (json.effective_distance_m !== undefined && json.effective_distance_m !== null) {
+        json.effective_distance_m = Number(json.effective_distance_m);
+      }
       if (json.allowed_radius_m !== undefined && json.allowed_radius_m !== null) {
         json.allowed_radius_m = Number(json.allowed_radius_m);
+      }
+      if (json.accuracy_buffer_m !== undefined && json.accuracy_buffer_m !== null) {
+        json.accuracy_buffer_m = Number(json.accuracy_buffer_m);
       }
     }
 

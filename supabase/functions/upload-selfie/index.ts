@@ -11,6 +11,7 @@
 import { getCorsHeaders, handleCors } from '../_shared/cors.ts';
 import { getServiceClient } from '../_shared/supabaseClient.ts';
 import { sha256Hex } from '../_shared/crypto.ts';
+import { haversineDistanceMeters, isValidCoordinatePair, parseStrictFiniteNumber } from '../_shared/geo.ts';
 
 declare const Deno: any;
 
@@ -71,7 +72,7 @@ Deno.serve(async (req: Request) => {
     const attemptTokenHash = await sha256Hex(attemptToken);
     const { data: attempt, error: attemptErr } = await supabase
       .from('attendance_attempts')
-      .select('id, session_id, student_id, expires_at, completed_at, step, latitude, longitude')
+      .select('id, session_id, student_id, expires_at, completed_at, step, latitude, longitude, accuracy_m')
       .eq('attempt_token_hash', attemptTokenHash)
       .maybeSingle();
 
@@ -105,20 +106,124 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // Step Guard: Look up lecture session to verify whether location is required
-    const { data: sessionData } = await supabase
+    // Step Guard: Look up lecture session (FAIL CLOSED on missing/closed/expired session)
+    const { data: sessionData, error: sessionErr } = await supabase
       .from('lecture_sessions')
-      .select('latitude, longitude')
+      .select('id, status, expires_at, latitude, longitude, radius_m')
       .eq('id', attempt.session_id)
       .maybeSingle();
 
-    const isLocationRequired = Boolean(sessionData?.latitude != null && sessionData?.longitude != null);
+    if (sessionErr || !sessionData) {
+      return new Response(JSON.stringify({
+        error: 'SESSION_NOT_FOUND',
+        message: 'Lecture session could not be verified.',
+      }), {
+        status: 404,
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (sessionData.status !== 'active') {
+      return new Response(JSON.stringify({
+        error: 'SESSION_CLOSED',
+        message: 'Lecture session has ended or been closed.',
+      }), {
+        status: 403,
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (new Date().toISOString() > sessionData.expires_at) {
+      return new Response(JSON.stringify({
+        error: 'SESSION_EXPIRED',
+        message: 'Lecture session has expired.',
+      }), {
+        status: 410,
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    const isLocationRequired = Boolean(sessionData.latitude != null && sessionData.longitude != null);
 
     if (isLocationRequired) {
-      if (attempt.latitude == null || attempt.longitude == null || (attempt.step !== 'selfie' && attempt.step !== 'video')) {
+      // Strictly block selfie upload unless location verification has ALREADY passed
+      if (attempt.step !== 'selfie' && attempt.step !== 'video') {
         return new Response(JSON.stringify({
           error: 'LOCATION_REQUIRED',
           message: 'Student location must be verified before uploading selfie proof.',
+        }), {
+          status: 403,
+          headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      const attemptLat = parseStrictFiniteNumber(attempt.latitude);
+      const attemptLng = parseStrictFiniteNumber(attempt.longitude);
+      const attemptAcc = parseStrictFiniteNumber(attempt.accuracy_m);
+
+      if (attemptLat === null || attemptLng === null || !isValidCoordinatePair(attemptLat, attemptLng)) {
+        return new Response(JSON.stringify({
+          error: 'LOCATION_REQUIRED',
+          message: 'Verified classroom GPS coordinates are missing or invalid.',
+        }), {
+          status: 403,
+          headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (attemptAcc === null || attemptAcc <= 0) {
+        return new Response(JSON.stringify({
+          error: 'INVALID_ACCURACY',
+          message: 'Verified GPS accuracy measurement is missing or invalid.',
+        }), {
+          status: 403,
+          headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      const { data: settingsData } = await supabase
+        .from('settings')
+        .select('location_accuracy_threshold_m')
+        .eq('id', 1)
+        .maybeSingle();
+
+      const configuredThreshold = parseStrictFiniteNumber(settingsData?.location_accuracy_threshold_m);
+      const accuracyThresholdM = Math.min(Math.max(configuredThreshold ?? 65, 5), 65);
+
+      if (attemptAcc > accuracyThresholdM) {
+        return new Response(JSON.stringify({
+          error: 'LOW_ACCURACY',
+          message: `GPS accuracy (±${attemptAcc.toFixed(1)}m) exceeds maximum allowed ±${Math.round(accuracyThresholdM)}m. Please re-verify your location.`,
+          accuracy_m: Number(attemptAcc.toFixed(1)),
+          max_accuracy_m: accuracyThresholdM,
+        }), {
+          status: 403,
+          headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      const sessionLat = parseStrictFiniteNumber(sessionData.latitude);
+      const sessionLng = parseStrictFiniteNumber(sessionData.longitude);
+      const allowedRadiusM = parseStrictFiniteNumber(sessionData.radius_m) ?? 50;
+
+      if (sessionLat === null || sessionLng === null || !isValidCoordinatePair(sessionLat, sessionLng)) {
+        return new Response(JSON.stringify({
+          error: 'NO_CLASSROOM_LOCATION',
+          message: 'Lecture session classroom coordinates are invalid.',
+        }), {
+          status: 400,
+          headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      const distanceM = haversineDistanceMeters(attemptLat, attemptLng, sessionLat, sessionLng);
+      if (!Number.isFinite(distanceM) || distanceM > allowedRadiusM) {
+        return new Response(JSON.stringify({
+          error: 'OUTSIDE_CLASSROOM_BOUNDARY',
+          message: `You are outside the lecture hall boundary (${distanceM.toFixed(1)}m away; must be within ${Math.round(allowedRadiusM)}m).`,
+          distance_m: Number(distanceM.toFixed(1)),
+          allowed_radius_m: allowedRadiusM,
+          accuracy_m: Number(attemptAcc.toFixed(1)),
         }), {
           status: 403,
           headers: { ...baseHeaders, 'Content-Type': 'application/json' },
@@ -241,13 +346,41 @@ Deno.serve(async (req: Request) => {
     }
 
     // 6. Update attempt step to 'selfie' and persist selfie_path on attempt row
-    await supabase
+    // When classroom location is required, conditionally guard the update so an
+    // unverified attempt can never be promoted to 'selfie' via race condition.
+    let updateQuery = supabase
       .from('attendance_attempts')
       .update({
-        step: 'selfie',
+        step: attempt.step === 'video' ? 'video' : 'selfie',
         selfie_path: canonicalPath,
       })
-      .eq('id', attempt.id);
+      .eq('id', attempt.id)
+      .is('completed_at', null);
+
+    if (isLocationRequired) {
+      updateQuery = updateQuery
+        .in('step', ['selfie', 'video'])
+        .not('latitude', 'is', null)
+        .not('longitude', 'is', null)
+        .not('accuracy_m', 'is', null);
+    }
+
+    const { data: updatedAttempt, error: updateErr } = await updateQuery
+      .select('id')
+      .maybeSingle();
+
+    if (updateErr || !updatedAttempt) {
+      console.error('Failed to persist selfie_path on attempt:', updateErr);
+      return new Response(JSON.stringify({
+        error: isLocationRequired ? 'LOCATION_REQUIRED' : 'ATTEMPT_UPDATE_FAILED',
+        message: isLocationRequired
+          ? 'Student location verification is required before completing selfie upload.'
+          : 'Failed to update attendance attempt state.',
+      }), {
+        status: isLocationRequired ? 403 : 500,
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      });
+    }
 
     // 7. Return canonical selfie path contract
     return new Response(JSON.stringify({

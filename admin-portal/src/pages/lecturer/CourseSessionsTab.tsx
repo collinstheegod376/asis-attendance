@@ -52,34 +52,23 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [newSessionCreated, setNewSessionCreated] = useState<LectureSession | null>(null);
 
-  // Classroom Geofence state (Default enabled, required)
+  // Classroom Geofence state (Default enabled, strict exact radius)
   const [useGeofence, setUseGeofence] = useState(true);
   const [locationName, setLocationName] = useState('');
   const [sessionLat, setSessionLat] = useState<number | ''>('');
   const [sessionLng, setSessionLng] = useState<number | ''>('');
-  const [selectedRadiusM, setSelectedRadiusM] = useState<number>(150);
-  const [radiusM, setRadiusM] = useState<number>(350);
+  const [radiusM, setRadiusM] = useState<number>(50);
   const [locationAccuracy, setLocationAccuracy] = useState<number | null>(null);
   const [detectingLocation, setDetectingLocation] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [liveAccuracy, setLiveAccuracy] = useState<number | null>(null);
+  const [liveStep, setLiveStep] = useState<string>('Waking up satellite GPS...');
   const [sampleCount, setSampleCount] = useState<number>(0);
-
-  // Compute effective boundary radius: compensates for lecturer GPS accuracy + student indoor GPS/Wi-Fi drift
-  const computeEffectiveRadius = (baseRadius: number, acc: number | null): number => {
-    const lecturerDrift = acc !== null && acc > 0 ? Math.ceil(acc) : 40;
-    const studentIndoorDriftBuffer = 180;
-    return Math.min(500, Math.max(baseRadius, 350, Math.ceil(baseRadius + lecturerDrift + studentIndoorDriftBuffer)));
-  };
-
-  const handleRadiusChange = (newBaseRadius: number) => {
-    setSelectedRadiusM(newBaseRadius);
-    setRadiusM(computeEffectiveRadius(newBaseRadius, locationAccuracy));
-  };
 
   const handleCaptureLocation = async () => {
     setLocationError(null);
     setLiveAccuracy(null);
+    setLiveStep('Waking up satellite GPS...');
     setSampleCount(0);
 
     if (!navigator.geolocation) {
@@ -88,25 +77,36 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
     }
     setDetectingLocation(true);
     try {
-      // Multi-sample GPS refinement over up to 4.5s (stopping early once accuracy <= 20m)
-      // Guaranteed enableHighAccuracy: true, maximumAge: 0 (No cached / cell-tower fallback)
+      // High-precision multi-sample GNSS convergence (up to 10s, min 2s warmup unless >= 3 crisp fixes <= 12m)
+      // Discards stale fixes (> 10s old) and computes an inverse-variance weighted centroid.
       const precise = await acquirePreciseLocation({
-        timeoutMs: 4500,
-        targetAccuracyM: 20,
-        minSampleMs: 800,
+        timeoutMs: 10000,
+        targetAccuracyM: 15,
+        minSampleMs: 2000,
         onProgress: (p) => {
           setLiveAccuracy(Math.round(p.bestAccuracy * 10) / 10);
           setSampleCount(p.sampleCount);
+          setLiveStep(p.step);
         },
       });
 
       const roundedAcc = Math.round(precise.accuracy * 10) / 10;
-      const effectiveRadius = computeEffectiveRadius(selectedRadiusM, roundedAcc);
 
-      setSessionLat(precise.latitude);
-      setSessionLng(precise.longitude);
+      // Hard-block grossly inaccurate desktop/IP/cell-tower readings (> 100m)
+      if (roundedAcc > 100) {
+        setSessionLat('');
+        setSessionLng('');
+        setLocationAccuracy(null);
+        setLocationError(
+          `Location rejected: your device returned coarse accuracy of ±${roundedAcc}m (likely desktop Wi-Fi/IP or cell-tower triangulation, which can be hundreds of meters off from the hall). Please capture location using a GPS-enabled phone near a doorway/window, or enter the exact hall coordinates manually below.`
+        );
+        return;
+      }
+
+      // Strictly preserve the lecturer's chosen radiusM (NO silent inflation)
+      setSessionLat(Number(precise.latitude.toFixed(7)));
+      setSessionLng(Number(precise.longitude.toFixed(7)));
       setLocationAccuracy(roundedAcc);
-      setRadiusM(effectiveRadius);
       if (!locationName) setLocationName('Classroom Lecture Hall');
       setUseGeofence(true);
       setLocationError(null);
@@ -115,9 +115,9 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
       if (err?.code === 1) {
         msg = 'Geolocation permission was denied by your browser. Please allow location permissions in your browser address bar, or enter classroom coordinates manually below.';
       } else if (err?.code === 2) {
-        msg = 'GPS fix unavailable on your current device or network. Please enter coordinates manually below.';
+        msg = 'GPS fix unavailable on your current device or network. Please use a GPS-enabled phone or enter coordinates manually below.';
       } else if (err?.code === 3) {
-        msg = 'GPS acquisition timed out. Please retry or enter classroom coordinates manually below.';
+        msg = 'GPS satellite acquisition timed out. Move near a window/doorway and retry, or enter classroom coordinates manually below.';
       }
       setLocationError(msg);
     } finally {
@@ -198,8 +198,14 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
         setFormError('Classroom Longitude must be between -180 and 180 degrees.');
         return;
       }
-      if (radiusM < 10 || radiusM > 500) {
-        setFormError('Classroom radius must be between 10 and 500 meters.');
+      if (locationAccuracy !== null && locationAccuracy > 100) {
+        setFormError(
+          `Captured GPS accuracy (±${locationAccuracy}m) is too coarse to lock a hall boundary. Capture location on a GPS-enabled phone or enter exact hall coordinates manually.`
+        );
+        return;
+      }
+      if (radiusM < 15 || radiusM > 500) {
+        setFormError('Classroom radius must be between 15 and 500 meters.');
         return;
       }
       validRadius = radiusM;
@@ -668,8 +674,8 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                             <span>
                               {detectingLocation
                                 ? (liveAccuracy !== null
-                                    ? `Refining GPS (±${liveAccuracy}m • #${sampleCount})...`
-                                    : 'Waking up satellite GPS...')
+                                    ? `${liveStep} (±${liveAccuracy}m • #${sampleCount})`
+                                    : liveStep)
                                 : 'Capture My Current Location'}
                             </span>
                           </button>
@@ -677,12 +683,12 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                           {sessionLat !== '' && sessionLng !== '' && (
                             <div
                               className={`inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border break-all sm:break-normal ${
-                                locationAccuracy !== null && locationAccuracy > 40
+                                locationAccuracy !== null && locationAccuracy > 35
                                   ? 'bg-amber-50 text-amber-800 border-amber-200'
                                   : 'bg-emerald-50 text-emerald-800 border-emerald-200'
                               }`}
                             >
-                              {locationAccuracy !== null && locationAccuracy > 40 ? (
+                              {locationAccuracy !== null && locationAccuracy > 35 ? (
                                 <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                               ) : (
                                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
@@ -695,14 +701,14 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                           )}
                         </div>
 
-                        {/* Auto-scaling notice when lecturer capture accuracy is coarse */}
-                        {locationAccuracy !== null && locationAccuracy > 20 && radiusM > selectedRadiusM && (
-                          <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-medium flex items-start gap-2">
+                        {/* Coarse accuracy warning (> 35m) without inflating radius */}
+                        {locationAccuracy !== null && locationAccuracy > 35 && (
+                          <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-[11px] font-medium flex items-start gap-2">
                             <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
                             <span>
-                              Your device GPS accuracy is <strong>&plusmn;{locationAccuracy}m</strong> (indoor/Wi-Fi drift).
-                              Classroom boundary automatically expanded from <strong>{selectedRadiusM}m</strong> to{' '}
-                              <strong>{radiusM}m</strong> so students in the same room aren&apos;t rejected as &ldquo;too far&rdquo;.
+                              Coarse location detected (<strong>&plusmn;{locationAccuracy}m</strong> — Wi-Fi/cellular estimate).
+                              Your chosen <strong>{radiusM}m</strong> boundary will be strictly enforced without auto-expansion, so a shifted pin may reject students in the hall.
+                              For accurate check-ins, re-capture using a smartphone with GPS near a doorway or window, or enter exact hall coordinates manually.
                             </span>
                           </div>
                         )}
@@ -728,23 +734,23 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                               Classroom Boundary Radius
                             </label>
                             <select
-                              value={selectedRadiusM}
-                              onChange={e => handleRadiusChange(parseInt(e.target.value, 10) || 100)}
+                              value={radiusM}
+                              onChange={e => setRadiusM(parseInt(e.target.value, 10) || 50)}
                               className="w-full px-2.5 py-2 rounded-xl border border-slate-300 text-xs bg-white font-medium focus:outline-hidden focus:ring-2 focus:ring-blue-600"
                             >
-                              <option value={50}>50m (Standard Classroom)</option>
-                              <option value={100}>100m (Default Lecture Hall)</option>
-                              <option value={150}>150m (Large Auditorium)</option>
-                              <option value={250}>250m (Complex / Indoor Hall)</option>
-                              {![50, 100, 150, 250].includes(selectedRadiusM) && (
-                                <option value={selectedRadiusM}>{selectedRadiusM}m (Custom)</option>
+                              <option value={25}>25m (Small Classroom)</option>
+                              <option value={35}>35m (Standard Classroom)</option>
+                              <option value={50}>50m (Default Lecture Hall)</option>
+                              <option value={75}>75m (Large Lecture Hall)</option>
+                              <option value={100}>100m (Auditorium)</option>
+                              <option value={150}>150m (Large Complex)</option>
+                              {![25, 35, 50, 75, 100, 150].includes(radiusM) && (
+                                <option value={radiusM}>{radiusM}m (Custom)</option>
                               )}
                             </select>
-                            {radiusM !== selectedRadiusM && (
-                              <span className="text-[10px] text-amber-700 font-semibold block mt-0.5">
-                                Effective: {radiusM}m (includes &plusmn;{locationAccuracy}m drift)
-                              </span>
-                            )}
+                            <span className="text-[10px] text-slate-500 block mt-0.5">
+                              Exact enforced radius: {radiusM}m
+                            </span>
                           </div>
 
                           <div>
@@ -762,7 +768,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                                 const val = e.target.value === '' ? '' : parseFloat(e.target.value);
                                 setSessionLat(val);
                                 setLocationAccuracy(null);
-                                setRadiusM(selectedRadiusM);
+                                setLocationError(null);
                               }}
                               className="w-full px-2.5 py-2 rounded-xl border border-slate-300 text-xs bg-white font-mono focus:outline-hidden focus:ring-2 focus:ring-blue-600"
                             />
@@ -783,7 +789,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                                 const val = e.target.value === '' ? '' : parseFloat(e.target.value);
                                 setSessionLng(val);
                                 setLocationAccuracy(null);
-                                setRadiusM(selectedRadiusM);
+                                setLocationError(null);
                               }}
                               className="w-full px-2.5 py-2 rounded-xl border border-slate-300 text-xs bg-white font-mono focus:outline-hidden focus:ring-2 focus:ring-blue-600"
                             />
@@ -791,7 +797,7 @@ export const CourseSessionsTab: React.FC<CourseSessionsTabProps> = ({ course, on
                         </div>
 
                         <p className="text-[10px] text-slate-500 italic">
-                          If creating a session on a desktop PC without GPS, enter the classroom coordinates manually above or choose 150m–250m radius to account for indoor Wi-Fi drift.
+                          Strict geofence: students must be within {radiusM}m of these exact coordinates. If creating a session on a desktop PC without GPS, capture location from a GPS phone inside the hall or enter exact hall coordinates manually.
                         </p>
                       </div>
                     )}

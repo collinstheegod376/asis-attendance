@@ -21,7 +21,7 @@ const defaultSettings: SystemSettings = {
   campus_center_lat: 6.2235,
   campus_center_lng: 6.6180,
   campus_radius_m: 1500,
-  location_accuracy_threshold_m: 50,
+  location_accuracy_threshold_m: 65,
   default_session_duration_minutes: 60,
   max_session_duration_minutes: 180,
   selfie_retention_days: 90,
@@ -109,7 +109,7 @@ export const SettingsPage: React.FC = () => {
         campus_center_lat: 6.2235,
         campus_center_lng: 6.6180,
         campus_radius_m: 1500,
-        location_accuracy_threshold_m: 50,
+        location_accuracy_threshold_m: 65,
         default_session_duration_minutes: 60,
         max_session_duration_minutes: 180,
         selfie_retention_days: 180,
@@ -274,11 +274,11 @@ export const SettingsPage: React.FC = () => {
                   min="10"
                   max="200"
                   value={settings.location_accuracy_threshold_m}
-                  onChange={e => setSettings({ ...settings, location_accuracy_threshold_m: parseInt(e.target.value, 10) || 50 })}
+                  onChange={e => setSettings({ ...settings, location_accuracy_threshold_m: parseInt(e.target.value, 10) || 65 })}
                   className="w-full sm:w-32 px-3.5 py-2 text-sm rounded-xl border border-slate-300 font-mono"
                 />
                 <span className="text-xs text-slate-500">
-                  Maximum allowable browser GPS accuracy circle (Default 50m). Readings with worse accuracy trigger a student retry.
+                  Maximum allowable browser GPS accuracy circle (Default 65m). Readings with worse accuracy trigger a student retry.
                 </span>
               </div>
             </div>

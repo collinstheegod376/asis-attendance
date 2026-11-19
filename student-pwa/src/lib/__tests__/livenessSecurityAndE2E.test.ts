@@ -74,7 +74,7 @@ describe('Agent 3: Liveness Security & End-to-End QA Audit', () => {
     it('1.3 upload-selfie constructs canonical storage path and marks step=selfie', () => {
       const code = fs.readFileSync(uploadSelfiePath, 'utf-8');
       expect(code).toContain('attendance/${attempt.session_id}/${attempt.student_id}/${attempt.id}.jpg');
-      expect(code).toContain("step: 'selfie'");
+      expect(code).toMatch(/step:\s*.*'selfie'/);
       expect(code).toContain("selfie_path: canonicalPath");
     });
 

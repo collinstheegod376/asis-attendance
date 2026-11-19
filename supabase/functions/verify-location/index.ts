@@ -2,12 +2,16 @@
  * Edge Function: verify-location
  * Fixes: SEC-07, SEC-09
  *
- * Verifies student GPS location against institutional campus boundary (GeoJSON or Haversine circle).
- * Enforces accuracy threshold check and returns ATTEMPT_EXPIRED or GEOFENCE_NOT_CONFIGURED.
- * Advances attempt step to 'selfie'.
+ * Strictly verifies student GPS location against the lecture session's exact classroom geofence.
+ * Rejects missing/invalid/Null Island coordinates and missing/non-positive GPS accuracy_m.
+ * Enforces per-attempt rate limiting to prevent coordinate-oracle brute-forcing.
+ * Advances attempt step to 'selfie' ONLY when exact Haversine distance <= session.radius_m
+ * and accuracy_m <= threshold (max 65m).
  */
 import { getCorsHeaders, handleCors } from '../_shared/cors.ts';
 import { getServiceClient } from '../_shared/supabaseClient.ts';
+import { sha256Hex } from '../_shared/crypto.ts';
+import { isValidCoordinatePair, parseStrictFiniteNumber } from '../_shared/geo.ts';
 
 declare const Deno: any;
 
@@ -28,13 +32,8 @@ Deno.serve(async (req: Request) => {
     const body = await req.json().catch(() => ({}));
     const attemptToken = body?.attempt_token || req.headers.get('x-attempt-token');
     const attemptId = body?.attempt_id || null;
-    const latitude = Number(body?.latitude);
-    const longitude = Number(body?.longitude);
-    const rawAccuracy = body?.accuracy_m ?? body?.accuracy;
-    const parsedAccuracy = rawAccuracy !== null && rawAccuracy !== undefined && rawAccuracy !== '' ? Number(rawAccuracy) : 50;
-    const accuracyM = Number.isFinite(parsedAccuracy) && parsedAccuracy >= 0 ? parsedAccuracy : 50;
 
-    if (!attemptToken || typeof attemptToken !== 'string') {
+    if (!attemptToken || typeof attemptToken !== 'string' || !attemptToken.trim()) {
       return new Response(JSON.stringify({
         success: false,
         error: 'INVALID_ATTEMPT_TOKEN',
@@ -45,18 +44,27 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    if (
-      !Number.isFinite(latitude) ||
-      !Number.isFinite(longitude) ||
-      latitude < -90 ||
-      latitude > 90 ||
-      longitude < -180 ||
-      longitude > 180
-    ) {
+    const latitude = parseStrictFiniteNumber(body?.latitude);
+    const longitude = parseStrictFiniteNumber(body?.longitude);
+    const rawAccuracy = body?.accuracy_m ?? body?.accuracy;
+    const accuracyM = parseStrictFiniteNumber(rawAccuracy);
+
+    if (latitude === null || longitude === null || !isValidCoordinatePair(latitude, longitude)) {
       return new Response(JSON.stringify({
         success: false,
         error: 'BAD_REQUEST',
-        message: 'Valid latitude and longitude coordinates are required.',
+        message: 'Valid non-zero GPS latitude and longitude coordinates are required.',
+      }), {
+        status: 400,
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (accuracyM === null || accuracyM <= 0) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'INVALID_ACCURACY',
+        message: 'A valid positive GPS accuracy measurement (accuracy_m > 0) is required.',
       }), {
         status: 400,
         headers: { ...baseHeaders, 'Content-Type': 'application/json' },
@@ -64,6 +72,26 @@ Deno.serve(async (req: Request) => {
     }
 
     const supabase = getServiceClient();
+
+    // Per-attempt rate limit (20 requests / 60s) to stop coordinate-oracle brute-forcing
+    // without penalizing students sharing campus Wi-Fi NAT IPs.
+    const attemptTokenHash = await sha256Hex(attemptToken);
+    const { data: rateAllowed } = await supabase.rpc('fn_rate_limit', {
+      p_key: `verify_location:attempt:${attemptTokenHash}`,
+      p_limit: 20,
+      p_window_seconds: 60,
+    });
+
+    if (rateAllowed === false) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'RATE_LIMIT_EXCEEDED',
+        message: 'Too many location verification attempts. Please wait a moment and try again.',
+      }), {
+        status: 429,
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      });
+    }
 
     const { data: result, error: rpcErr } = await supabase.rpc('rpc_verify_location', {
       p_attempt_id: attemptId,
@@ -89,12 +117,13 @@ Deno.serve(async (req: Request) => {
     if (!result.success) {
       const errCode = (result.error as string) || 'LOCATION_VERIFICATION_FAILED';
       const status =
-        errCode === 'OUTSIDE_CAMPUS_BOUNDARY' || errCode === 'OUTSIDE_CLASSROOM_BOUNDARY' || errCode === 'LOW_ACCURACY'
+        errCode === 'OUTSIDE_CAMPUS_BOUNDARY' ||
+        errCode === 'OUTSIDE_CLASSROOM_BOUNDARY' ||
+        errCode === 'LOW_ACCURACY' ||
+        errCode === 'SESSION_CLOSED'
           ? 403
-          : errCode === 'ATTEMPT_EXPIRED'
+          : errCode === 'ATTEMPT_EXPIRED' || errCode === 'SESSION_EXPIRED'
           ? 410
-          : errCode === 'GEOFENCE_NOT_CONFIGURED'
-          ? 400
           : 400;
 
       return new Response(JSON.stringify({
@@ -102,23 +131,22 @@ Deno.serve(async (req: Request) => {
         error: errCode,
         message: result.message,
         ...(result.distance_m !== undefined ? { distance_m: result.distance_m } : {}),
-        ...(result.effective_distance_m !== undefined ? { effective_distance_m: result.effective_distance_m } : {}),
         ...(result.allowed_radius_m !== undefined ? { allowed_radius_m: result.allowed_radius_m } : {}),
-        ...(result.accuracy_buffer_m !== undefined ? { accuracy_buffer_m: result.accuracy_buffer_m } : {}),
+        ...(result.accuracy_m !== undefined ? { accuracy_m: result.accuracy_m } : {}),
+        ...(result.max_accuracy_m !== undefined ? { max_accuracy_m: result.max_accuracy_m } : {}),
       }), {
         status,
         headers: { ...baseHeaders, 'Content-Type': 'application/json' },
       });
     }
 
-    // Success contract matching Agent 2 specification + geofence distance telemetry
+    // Success contract matching Student PWA specification + exact geofence distance telemetry
     return new Response(JSON.stringify({
       success: true,
       inside_boundary: Boolean(result.inside_boundary),
       ...(result.distance_m !== undefined ? { distance_m: result.distance_m } : {}),
-      ...(result.effective_distance_m !== undefined ? { effective_distance_m: result.effective_distance_m } : {}),
       ...(result.allowed_radius_m !== undefined ? { allowed_radius_m: result.allowed_radius_m } : {}),
-      ...(result.accuracy_buffer_m !== undefined ? { accuracy_buffer_m: result.accuracy_buffer_m } : {}),
+      ...(result.accuracy_m !== undefined ? { accuracy_m: result.accuracy_m } : {}),
       ...(result.message ? { message: result.message } : {}),
     }), {
       status: 200,

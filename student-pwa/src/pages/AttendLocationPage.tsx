@@ -2,15 +2,28 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MapPin, CheckCircle2, AlertTriangle, RefreshCw, ArrowRight, ShieldCheck } from 'lucide-react';
 import { Header } from '../components/Header';
-import { getAttemptState, updateAttemptLocation, clearAttemptState } from '../lib/attemptState';
+import {
+  getAttemptState,
+  updateAttemptLocation,
+  clearAttemptLocation,
+  clearAttemptState,
+  isLocationRequirementSatisfied,
+} from '../lib/attemptState';
 import { attendanceService, ApiError } from '../lib/attendanceService';
-
-interface GpsFix {
-  latitude: number;
-  longitude: number;
-  accuracy: number;
-  timestamp: number;
-}
+import {
+  MAX_ALLOWED_ACCURACY_M,
+  TARGET_HIGH_ACCURACY_M,
+  SETTLE_WINDOW_MS,
+  MAX_ACQUISITION_WINDOW_MS,
+  MIN_CONSISTENT_SAMPLES_FAST_LOCK,
+  MAX_FAST_LOCK_SPREAD_M,
+  haversineDistanceMeters,
+  validateGpsFix,
+  detectTeleportationJump,
+  selectConsistentClusterAndAverage,
+  formatLowAccuracyMessage,
+} from '../lib/preciseLocation';
+import type { GpsFix, PreciseLocation } from '../lib/preciseLocation';
 
 interface BoundaryFailureDetails {
   code: string;
@@ -20,30 +33,17 @@ interface BoundaryFailureDetails {
   accuracyM: number;
 }
 
-// Fast-path accuracy threshold: readings <= 20m are satellite-grade and verified immediately
-const FAST_VERIFY_ACCURACY_M = 20;
-// Settling window for moderate/coarse readings (> 20m) so initial Wi-Fi/cell bounce is replaced by GPS
-const MODERATE_SETTLE_WINDOW_MS = 3500;
-// Total active search window to continue listening and re-verifying if early samples return "too far"
-const MAX_SEARCH_WINDOW_MS = 10000;
-
-function haversineDistanceMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const R = 6371000;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
 export const AttendLocationPage: React.FC = () => {
   const navigate = useNavigate();
   const attempt = getAttemptState();
 
   const [loading, setLoading] = useState(true);
-  const [coords, setCoords] = useState<{ lat: number; lng: number; accuracy: number } | null>(null);
+  const [coords, setCoords] = useState<{
+    lat: number;
+    lng: number;
+    accuracy: number;
+    sampleCount?: number;
+  } | null>(null);
   const [errorStatus, setErrorStatus] = useState<string | null>(null);
   const [boundaryMetrics, setBoundaryMetrics] = useState<{
     distanceM?: number;
@@ -53,6 +53,7 @@ export const AttendLocationPage: React.FC = () => {
   const [verifiedSuccess, setVerifiedSuccess] = useState(false);
   const [boundaryStatus, setBoundaryStatus] = useState<string | null>(null);
   const [liveAccuracy, setLiveAccuracy] = useState<number | null>(null);
+  const [liveSampleCount, setLiveSampleCount] = useState<number>(0);
   const [gpsProgressStep, setGpsProgressStep] = useState<string>('Acquiring satellite GPS lock...');
 
   const activeSessionCleanupRef = useRef<(() => void) | null>(null);
@@ -69,7 +70,7 @@ export const AttendLocationPage: React.FC = () => {
     const currentAttempt = getAttemptState();
 
     // If lecturer has not enabled location verification, skip GPS and go straight to selfie capture
-    if (!currentAttempt?.session?.location_enabled) {
+    if (currentAttempt?.session?.location_enabled !== true) {
       navigate('/attend/selfie', { replace: true });
       return;
     }
@@ -80,8 +81,9 @@ export const AttendLocationPage: React.FC = () => {
       return;
     }
 
-    // Cancel any previous active watcher or timers
+    // Cancel any previous active watcher or timers and clear any prior verified location before retrying
     stopActiveGpsWatch();
+    clearAttemptLocation();
 
     setLoading(true);
     setErrorStatus(null);
@@ -89,6 +91,7 @@ export const AttendLocationPage: React.FC = () => {
     setVerifiedSuccess(false);
     setBoundaryStatus(null);
     setLiveAccuracy(null);
+    setLiveSampleCount(0);
     setGpsProgressStep('Waking up hardware GPS satellite receiver...');
 
     if (!('geolocation' in navigator)) {
@@ -106,11 +109,16 @@ export const AttendLocationPage: React.FC = () => {
     let settleTimer: ReturnType<typeof setTimeout> | null = null;
     let searchWindowTimer: ReturnType<typeof setTimeout> | null = null;
 
-    let bestFix: GpsFix | null = null;
-    let lastVerifiedFix: GpsFix | null = null;
+    const validSamples: GpsFix[] = [];
+    let lastAcceptedFix: GpsFix | null = null;
+    let bestClusteredFix: PreciseLocation | null = null;
+    let lastVerifiedFix: PreciseLocation | null = null;
+    let pendingVerifyFix: PreciseLocation | null = null;
     let lastFailure: BoundaryFailureDetails | null = null;
+    let bestRejectedAccuracyM: number | null = null;
+    let sawStaleFix = false;
+    let sawInvalidFix = false;
     let verificationInFlight = false;
-    let pendingVerifyFix: GpsFix | null = null;
     let settleWindowElapsed = false;
     let searchWindowClosed = false;
     let verifyAttemptsCount = 0;
@@ -133,28 +141,38 @@ export const AttendLocationPage: React.FC = () => {
 
     activeSessionCleanupRef.current = cleanup;
 
-    const renderFinalFailure = (failure: BoundaryFailureDetails | null, fallbackFix: GpsFix | null) => {
+    const renderFinalFailure = (
+      failure: BoundaryFailureDetails | null,
+      fallbackFix: PreciseLocation | null
+    ) => {
       if (!isMountedRef.current) return;
       cleanup();
       setVerifiedSuccess(false);
 
-      const finalAcc = failure?.accuracyM ?? fallbackFix?.accuracy;
+      const finalAcc =
+        failure?.accuracyM && failure.accuracyM > 0
+          ? failure.accuracyM
+          : fallbackFix?.accuracy ?? bestRejectedAccuracyM ?? undefined;
+
       if (fallbackFix) {
         setCoords({
           lat: fallbackFix.latitude,
           lng: fallbackFix.longitude,
           accuracy: fallbackFix.accuracy,
+          sampleCount: fallbackFix.sampleCount,
         });
       }
 
       if (failure) {
         if (failure.code === 'LOW_ACCURACY') {
-          setBoundaryMetrics(
-            finalAcc !== undefined ? { accuracyM: finalAcc } : null
-          );
-          setErrorStatus(
-            `GPS accuracy (${finalAcc !== undefined ? `±${finalAcc.toFixed(1)}m` : 'coarse'}) is too low for classroom verification. Move closer to a window or open sky and tap High-Precision GPS Retry.`
-          );
+          setBoundaryMetrics(finalAcc !== undefined ? { accuracyM: finalAcc } : null);
+          setErrorStatus(formatLowAccuracyMessage(finalAcc, MAX_ALLOWED_ACCURACY_M));
+        } else if (failure.code === 'GPS_TELEPORT_DETECTED' || failure.code === 'SUSPICIOUS_GPS') {
+          setBoundaryMetrics(finalAcc !== undefined ? { accuracyM: finalAcc } : null);
+          setErrorStatus(failure.message);
+        } else if (failure.code === 'STALE_LOCATION') {
+          setBoundaryMetrics(null);
+          setErrorStatus(failure.message);
         } else if (failure.code === 'OUTSIDE_CLASSROOM_BOUNDARY') {
           const allowedRadius = failure.allowedRadiusM ?? 50;
           const distPart =
@@ -170,9 +188,7 @@ export const AttendLocationPage: React.FC = () => {
             `You are outside the classroom boundary. You must be within ${allowedRadius}m of the lecturer to sign attendance.${distPart}`
           );
         } else if (failure.code === 'OUTSIDE_CAMPUS_BOUNDARY') {
-          setBoundaryMetrics(
-            finalAcc !== undefined ? { accuracyM: finalAcc } : null
-          );
+          setBoundaryMetrics(finalAcc !== undefined ? { accuracyM: finalAcc } : null);
           setErrorStatus('You are outside the permitted lecture hall / campus boundary.');
         } else if (failure.code === 'NO_CLASSROOM_LOCATION' || failure.code === 'GEOFENCE_NOT_CONFIGURED') {
           setErrorStatus(
@@ -182,13 +198,18 @@ export const AttendLocationPage: React.FC = () => {
           setErrorStatus(failure.message || 'Location could not be verified. Tap retry.');
         }
       } else {
-        setErrorStatus('GPS satellite lock timed out before confirming classroom boundary. Move closer to a window and tap High-Precision GPS Retry.');
+        setErrorStatus(
+          'GPS satellite lock timed out before confirming classroom boundary. Move near a window or turn on Precise Location & Wi-Fi scanning, then retry.'
+        );
       }
 
       setLoading(false);
     };
 
-    const hasSignificantImprovement = (candidate: GpsFix, previousVerified: GpsFix | null): boolean => {
+    const hasSignificantImprovement = (
+      candidate: PreciseLocation,
+      previousVerified: PreciseLocation | null
+    ): boolean => {
       if (!previousVerified) return true;
       const accImprovedM = previousVerified.accuracy - candidate.accuracy;
       const accImprovedRatio = accImprovedM / Math.max(previousVerified.accuracy, 1);
@@ -198,10 +219,10 @@ export const AttendLocationPage: React.FC = () => {
         candidate.latitude,
         candidate.longitude
       );
-      // Re-verify if accuracy improved by >= 3m or >= 12%, or if coordinates converged by >= 3m with good accuracy
       return (
         accImprovedM >= 3 ||
         accImprovedRatio >= 0.12 ||
+        (candidate.sampleCount > previousVerified.sampleCount && coordShiftM >= 2.5) ||
         (coordShiftM >= 3 && candidate.accuracy <= Math.max(previousVerified.accuracy, 35))
       );
     };
@@ -223,11 +244,33 @@ export const AttendLocationPage: React.FC = () => {
       };
     };
 
-    const verifyFixWithBackend = async (fixToVerify: GpsFix, isFinalAttempt = false): Promise<void> => {
+    const verifyFixWithBackend = async (
+      fixToVerify: PreciseLocation,
+      isFinalAttempt = false
+    ): Promise<void> => {
       if (cancelled || !isMountedRef.current) return;
 
+      // Hard client-side accuracy gate: never submit readings > 65m to /api/verify-location
+      if (fixToVerify.accuracy > MAX_ALLOWED_ACCURACY_M) {
+        if (isFinalAttempt || searchWindowClosed) {
+          renderFinalFailure(
+            {
+              code: 'LOW_ACCURACY',
+              message: formatLowAccuracyMessage(fixToVerify.accuracy, MAX_ALLOWED_ACCURACY_M),
+              accuracyM: fixToVerify.accuracy,
+            },
+            null
+          );
+        }
+        return;
+      }
+
       if (verificationInFlight) {
-        if (!pendingVerifyFix || fixToVerify.accuracy <= pendingVerifyFix.accuracy) {
+        if (
+          !pendingVerifyFix ||
+          fixToVerify.accuracy < pendingVerifyFix.accuracy ||
+          fixToVerify.sampleCount > pendingVerifyFix.sampleCount
+        ) {
           pendingVerifyFix = fixToVerify;
         }
         return;
@@ -242,11 +285,12 @@ export const AttendLocationPage: React.FC = () => {
           lat: fixToVerify.latitude,
           lng: fixToVerify.longitude,
           accuracy: fixToVerify.accuracy,
+          sampleCount: fixToVerify.sampleCount,
         });
         setGpsProgressStep(
           verifyAttemptsCount === 1
-            ? `Verifying classroom boundary (±${fixToVerify.accuracy.toFixed(1)}m)...`
-            : `Re-verifying converged satellite fix #${verifyAttemptsCount} (±${fixToVerify.accuracy.toFixed(1)}m)...`
+            ? `Verifying classroom boundary (±${fixToVerify.accuracy.toFixed(1)}m · ${fixToVerify.sampleCount} sample${fixToVerify.sampleCount === 1 ? '' : 's'})...`
+            : `Re-verifying converged GNSS cluster #${verifyAttemptsCount} (±${fixToVerify.accuracy.toFixed(1)}m · ${fixToVerify.sampleCount} samples)...`
         );
       }
 
@@ -263,7 +307,8 @@ export const AttendLocationPage: React.FC = () => {
 
         if (cancelled || !isMountedRef.current) return;
 
-        if (result.success) {
+        // Fail closed: require BOTH success === true AND inside_boundary === true
+        if (result.success === true && result.inside_boundary === true) {
           cleanup();
           const radiusLabel = result.allowed_radius_m ?? 50;
           const distLabel =
@@ -275,21 +320,27 @@ export const AttendLocationPage: React.FC = () => {
             lat: fixToVerify.latitude,
             lng: fixToVerify.longitude,
             accuracy: fixToVerify.accuracy,
+            sampleCount: fixToVerify.sampleCount,
           });
           updateAttemptLocation({
             latitude: fixToVerify.latitude,
             longitude: fixToVerify.longitude,
             accuracy_m: fixToVerify.accuracy,
             verified_at: new Date().toISOString(),
-            inside_boundary: result.inside_boundary,
+            inside_boundary: true,
           });
           setVerifiedSuccess(true);
           setLoading(false);
           return;
         }
 
-        // Handle non-throwing result.success === false responses
-        const errCode = result.error || 'LOCATION_VERIFICATION_FAILED';
+        // Handle non-throwing failure or inside_boundary !== true
+        const errCode =
+          result.error ||
+          (result.success === true && result.inside_boundary !== true
+            ? 'OUTSIDE_CLASSROOM_BOUNDARY'
+            : 'LOCATION_VERIFICATION_FAILED');
+
         if (errCode === 'ATTEMPT_EXPIRED' || errCode === 'SESSION_EXPIRED') {
           cleanup();
           clearAttemptState();
@@ -326,7 +377,6 @@ export const AttendLocationPage: React.FC = () => {
             navigate('/expired', { replace: true });
             return;
           }
-          // Only redirect to /closed on explicit SESSION_CLOSED (HTTP 403 is also used for OUTSIDE_CLASSROOM_BOUNDARY / OUTSIDE_CAMPUS_BOUNDARY / LOW_ACCURACY)
           if (err.code === 'SESSION_CLOSED') {
             cleanup();
             clearAttemptState();
@@ -365,10 +415,10 @@ export const AttendLocationPage: React.FC = () => {
       }
 
       const elapsedMs = Date.now() - startTime;
-      const windowStillOpen = !searchWindowClosed && !isFinalAttempt && elapsedMs < MAX_SEARCH_WINDOW_MS;
+      const windowStillOpen =
+        !searchWindowClosed && !isFinalAttempt && elapsedMs < MAX_ACQUISITION_WINDOW_MS;
 
       if (windowStillOpen) {
-        // If a better fix arrived while verification was in flight, verify it immediately
         if (pendingVerifyFix && hasSignificantImprovement(pendingVerifyFix, lastVerifiedFix)) {
           const nextFix = pendingVerifyFix;
           pendingVerifyFix = null;
@@ -377,118 +427,230 @@ export const AttendLocationPage: React.FC = () => {
         }
         pendingVerifyFix = null;
 
-        // Keep watchPosition alive so tighter satellite fixes can converge inside the boundary
-        const remainingSec = Math.max(1, Math.ceil((MAX_SEARCH_WINDOW_MS - elapsedMs) / 1000));
+        const remainingSec = Math.max(1, Math.ceil((MAX_ACQUISITION_WINDOW_MS - elapsedMs) / 1000));
         if (lastFailure?.code === 'OUTSIDE_CLASSROOM_BOUNDARY' && lastFailure.distanceM !== undefined) {
           setGpsProgressStep(
             `Initial fix ${lastFailure.distanceM.toFixed(1)}m away (±${fixToVerify.accuracy.toFixed(0)}m) — refining satellite lock (${remainingSec}s)...`
           );
         } else if (lastFailure?.code === 'LOW_ACCURACY') {
           setGpsProgressStep(
-            `Coarse signal (±${fixToVerify.accuracy.toFixed(0)}m) — waiting for tighter satellite lock (${remainingSec}s)...`
+            `Signal accuracy ±${fixToVerify.accuracy.toFixed(0)}m — waiting for tighter satellite lock (${remainingSec}s)...`
           );
         } else {
-          setGpsProgressStep(`Refining GPS coordinates with satellite receiver (${remainingSec}s)...`);
+          setGpsProgressStep(`Refining GNSS satellite cluster (${remainingSec}s)...`);
         }
         return;
       }
 
-      // Search window has closed: if there is an unverified better fix, try it once before failing
-      const finalCandidate = pendingVerifyFix || bestFix;
+      // Acquisition window closed: verify one last improved clustered fix if available
+      const finalCandidate = pendingVerifyFix || bestClusteredFix;
       pendingVerifyFix = null;
       if (
         !isFinalAttempt &&
         finalCandidate &&
+        finalCandidate.accuracy <= MAX_ALLOWED_ACCURACY_M &&
         hasSignificantImprovement(finalCandidate, lastVerifiedFix)
       ) {
         await verifyFixWithBackend(finalCandidate, true);
         return;
       }
 
-      renderFinalFailure(lastFailure, bestFix || fixToVerify);
+      renderFinalFailure(lastFailure, bestClusteredFix || fixToVerify);
     };
 
-    // 1. Settle window timer (3.5s): submits best moderate/coarse sample if no <= 20m sample arrived earlier
+    // 1. Settle window timer (3.5s): verifies inverse-variance weighted cluster ONLY if accuracy <= 65m
     settleTimer = setTimeout(() => {
       if (cancelled || !isMountedRef.current) return;
       settleWindowElapsed = true;
-      if (bestFix && !lastVerifiedFix && !verificationInFlight) {
-        void verifyFixWithBackend(bestFix, false);
+      if (
+        bestClusteredFix &&
+        bestClusteredFix.accuracy <= MAX_ALLOWED_ACCURACY_M &&
+        !lastVerifiedFix &&
+        !verificationInFlight
+      ) {
+        void verifyFixWithBackend(bestClusteredFix, false);
+      } else if (!bestClusteredFix && bestRejectedAccuracyM !== null) {
+        const remainingSec = Math.max(
+          1,
+          Math.ceil((MAX_ACQUISITION_WINDOW_MS - (Date.now() - startTime)) / 1000)
+        );
+        setGpsProgressStep(
+          `GPS signal is ±${Math.round(bestRejectedAccuracyM)}m — waiting for ±${MAX_ALLOWED_ACCURACY_M}m or better (${remainingSec}s)...`
+        );
       }
-    }, MODERATE_SETTLE_WINDOW_MS);
+    }, SETTLE_WINDOW_MS);
 
-    // 2. Maximum search window timer (10s): stops waiting and runs final verification on best sample or displays diagnostic error
+    // 2. Maximum acquisition window timer (12s): submits final valid <= 65m cluster or fails locally with exact diagnostics
     searchWindowTimer = setTimeout(() => {
       if (cancelled || !isMountedRef.current) return;
       searchWindowClosed = true;
 
       if (verificationInFlight) {
-        // Let the in-flight verification complete; its post-check will see searchWindowClosed === true
         return;
       }
 
-      if (bestFix && hasSignificantImprovement(bestFix, lastVerifiedFix)) {
-        void verifyFixWithBackend(bestFix, true);
+      if (
+        bestClusteredFix &&
+        bestClusteredFix.accuracy <= MAX_ALLOWED_ACCURACY_M &&
+        hasSignificantImprovement(bestClusteredFix, lastVerifiedFix)
+      ) {
+        void verifyFixWithBackend(bestClusteredFix, true);
       } else if (lastFailure) {
-        renderFinalFailure(lastFailure, bestFix);
-      } else if (bestFix) {
-        void verifyFixWithBackend(bestFix, true);
+        renderFinalFailure(lastFailure, bestClusteredFix);
+      } else if (bestClusteredFix && bestClusteredFix.accuracy <= MAX_ALLOWED_ACCURACY_M) {
+        void verifyFixWithBackend(bestClusteredFix, true);
+      } else if (bestRejectedAccuracyM !== null) {
+        renderFinalFailure(
+          {
+            code: 'LOW_ACCURACY',
+            message: formatLowAccuracyMessage(bestRejectedAccuracyM, MAX_ALLOWED_ACCURACY_M),
+            accuracyM: bestRejectedAccuracyM,
+          },
+          null
+        );
+      } else if (sawInvalidFix) {
+        renderFinalFailure(
+          {
+            code: 'SUSPICIOUS_GPS',
+            message:
+              'Invalid or spoofed GPS readings detected. Disable any mock location apps, turn on Precise Location, and tap High-Precision GPS Retry.',
+            accuracyM: 0,
+          },
+          null
+        );
+      } else if (sawStaleFix) {
+        renderFinalFailure(
+          {
+            code: 'STALE_LOCATION',
+            message:
+              'Your phone only reported a cached old location (> 10s old). Toggle Location off and on, move near a window, and tap High-Precision GPS Retry.',
+            accuracyM: 0,
+          },
+          null
+        );
       } else {
         renderFinalFailure(
           {
             code: 'TIMEOUT',
-            message: 'GPS satellite lock timed out. Please move near a window or open sky and tap High-Precision GPS Retry.',
+            message:
+              'GPS satellite lock timed out. Move near a window or turn on Precise Location & Wi-Fi scanning, then tap High-Precision GPS Retry.',
             accuracyM: 0,
           },
           null
         );
       }
-    }, MAX_SEARCH_WINDOW_MS);
+    }, MAX_ACQUISITION_WINDOW_MS);
 
-    // 3. Start streaming high-accuracy hardware GPS fixes (maximumAge: 0 forbids stale cached OS fixes)
+    // 3. Start streaming high-accuracy hardware GNSS fixes (maximumAge: 0 forbids stale cached OS fixes)
     try {
       watchId = navigator.geolocation.watchPosition(
         (pos) => {
           if (cancelled || !isMountedRef.current) return;
 
+          const now = Date.now();
           const currentFix: GpsFix = {
             latitude: pos.coords.latitude,
             longitude: pos.coords.longitude,
             accuracy: pos.coords.accuracy,
-            timestamp: pos.timestamp || Date.now(),
+            timestamp: pos.timestamp || now,
+            receivedAt: now,
           };
 
-          if (
-            !bestFix ||
-            currentFix.accuracy < bestFix.accuracy ||
-            // Also prefer a newer reading if its accuracy is within 2m of bestFix after initial settle
-            (currentFix.accuracy <= bestFix.accuracy + 2 && currentFix.accuracy <= 25)
-          ) {
-            bestFix = currentFix;
+          const validation = validateGpsFix(currentFix, now, MAX_ALLOWED_ACCURACY_M);
+          if (!validation.valid) {
+            const remainingSec = Math.max(
+              1,
+              Math.ceil((MAX_ACQUISITION_WINDOW_MS - (now - startTime)) / 1000)
+            );
+            if (validation.reason === 'COARSE_ACCURACY') {
+              setLiveAccuracy(currentFix.accuracy);
+              if (bestRejectedAccuracyM === null || currentFix.accuracy < bestRejectedAccuracyM) {
+                bestRejectedAccuracyM = currentFix.accuracy;
+              }
+              setGpsProgressStep(
+                `GPS signal is ±${Math.round(currentFix.accuracy)}m — must be ±${MAX_ALLOWED_ACCURACY_M}m or better (${remainingSec}s)...`
+              );
+            } else if (validation.reason === 'STALE_FIX' || validation.reason === 'FUTURE_TIMESTAMP') {
+              sawStaleFix = true;
+              setGpsProgressStep(
+                `Discarded cached OS location — waking live GPS satellites (${remainingSec}s)...`
+              );
+            } else {
+              sawInvalidFix = true;
+              setGpsProgressStep(
+                `Rejected invalid GPS reading — waiting for genuine satellite signal (${remainingSec}s)...`
+              );
+            }
+            return;
           }
 
-          setLiveAccuracy(currentFix.accuracy);
-
-          // CASE A: Very accurate satellite fix (<= 20m) -> verify immediately!
-          if (currentFix.accuracy <= FAST_VERIFY_ACCURACY_M) {
-            if (hasSignificantImprovement(currentFix, lastVerifiedFix)) {
-              void verifyFixWithBackend(currentFix, false);
+          // Anti-spoof check: detect impossible teleportation jump between consecutive high-accuracy fixes
+          if (lastAcceptedFix) {
+            const teleport = detectTeleportationJump(lastAcceptedFix, currentFix);
+            if (teleport.isTeleport) {
+              validSamples.length = 0;
+              bestClusteredFix = null;
+              renderFinalFailure(
+                {
+                  code: 'GPS_TELEPORT_DETECTED',
+                  message: `Suspicious GPS location jump detected (${Math.round(teleport.distanceM)}m in ${(teleport.dtMs / 1000).toFixed(1)}s). Disable any mock location / spoofing apps, stay still, and tap High-Precision GPS Retry.`,
+                  accuracyM: currentFix.accuracy,
+                },
+                null
+              );
               return;
             }
           }
 
-          // CASE B: Moderate/coarse reading (> 20m) before 3.5s settle window completes -> keep collecting samples
+          lastAcceptedFix = currentFix;
+          validSamples.push(currentFix);
+
+          // Retain recent fresh samples (max 12, and drop anything older than 15s)
+          while (
+            validSamples.length > 12 ||
+            (validSamples.length > 1 && now - validSamples[0].timestamp > 15_000)
+          ) {
+            validSamples.shift();
+          }
+
+          const clustered = selectConsistentClusterAndAverage(validSamples, MAX_ALLOWED_ACCURACY_M);
+          if (!clustered) return;
+
+          if (
+            !bestClusteredFix ||
+            clustered.accuracy < bestClusteredFix.accuracy ||
+            (clustered.sampleCount > bestClusteredFix.sampleCount &&
+              clustered.accuracy <= bestClusteredFix.accuracy + 3)
+          ) {
+            bestClusteredFix = clustered;
+          }
+
+          setLiveAccuracy(clustered.accuracy);
+          setLiveSampleCount(clustered.sampleCount);
+
+          // CASE A: Confirmed multi-sample satellite lock (<= 20m, >= 2 consistent samples, <= 25m spread)
+          if (
+            clustered.sampleCount >= MIN_CONSISTENT_SAMPLES_FAST_LOCK &&
+            clustered.accuracy <= TARGET_HIGH_ACCURACY_M &&
+            clustered.spreadM <= MAX_FAST_LOCK_SPREAD_M
+          ) {
+            if (hasSignificantImprovement(clustered, lastVerifiedFix)) {
+              void verifyFixWithBackend(clustered, false);
+              return;
+            }
+          }
+
+          // CASE B: Still in initial settling window -> collect additional GNSS samples for weighted averaging
           if (!settleWindowElapsed && !lastVerifiedFix) {
             setGpsProgressStep(
-              `Filtering initial signal (±${currentFix.accuracy.toFixed(1)}m), locking onto GPS satellites...`
+              `Confirming satellite cluster (±${clustered.accuracy.toFixed(1)}m · ${clustered.sampleCount} sample${clustered.sampleCount === 1 ? '' : 's'})...`
             );
             return;
           }
 
-          // CASE C: After 3.5s settle window (or after an early "too far" result while < 10s search window is open),
-          // re-verify as soon as a significantly better reading arrives!
-          if (hasSignificantImprovement(currentFix, lastVerifiedFix)) {
-            void verifyFixWithBackend(currentFix, false);
+          // CASE C: After settling window (or refining after early failure) -> re-verify on meaningful improvement
+          if (hasSignificantImprovement(clustered, lastVerifiedFix)) {
+            void verifyFixWithBackend(clustered, false);
           }
         },
         (geoErr) => {
@@ -499,20 +661,22 @@ export const AttendLocationPage: React.FC = () => {
             cleanup();
             setVerifiedSuccess(false);
             setErrorStatus(
-              'Location permission was denied. Please allow location access in your browser or phone settings and tap retry.'
+              'Location permission was denied. Please allow Precise Location access in your browser or phone settings and tap retry.'
             );
             setLoading(false);
             return;
           }
 
-          // For transient position unavailable (2) or timeout (3), only abort if search window is closed and we have no fix
-          if (searchWindowClosed && !bestFix) {
+          // For transient position unavailable (2) or timeout (3), only abort if acquisition window closed with no valid cluster
+          if (searchWindowClosed && !bestClusteredFix) {
             cleanup();
             setVerifiedSuccess(false);
             setErrorStatus(
-              geoErr?.code === 2
-                ? 'GPS signal unavailable indoors. Move closer to open sky and tap High-Precision GPS Retry.'
-                : 'GPS satellite lock timed out. Please tap High-Precision GPS Retry.'
+              bestRejectedAccuracyM !== null
+                ? formatLowAccuracyMessage(bestRejectedAccuracyM, MAX_ALLOWED_ACCURACY_M)
+                : geoErr?.code === 2
+                ? 'GPS signal unavailable indoors. Move near a window or turn on Precise Location & Wi-Fi scanning, then retry.'
+                : 'GPS satellite lock timed out. Move near a window and tap High-Precision GPS Retry.'
             );
             setLoading(false);
           }
@@ -520,7 +684,7 @@ export const AttendLocationPage: React.FC = () => {
         {
           enableHighAccuracy: true,
           maximumAge: 0,
-          timeout: 12000,
+          timeout: MAX_ACQUISITION_WINDOW_MS,
         }
       );
     } catch (e: any) {
@@ -547,7 +711,7 @@ export const AttendLocationPage: React.FC = () => {
       return;
     }
 
-    if (!currentAttempt.session?.location_enabled) {
+    if (currentAttempt.session?.location_enabled !== true) {
       navigate('/attend/selfie', { replace: true });
       return;
     }
@@ -562,6 +726,11 @@ export const AttendLocationPage: React.FC = () => {
 
   const handleProceed = () => {
     if (!verifiedSuccess) return;
+    if (!isLocationRequirementSatisfied(getAttemptState())) {
+      setVerifiedSuccess(false);
+      setErrorStatus('Classroom location verification is required before continuing.');
+      return;
+    }
     navigate('/attend/selfie');
   };
 
@@ -593,14 +762,14 @@ export const AttendLocationPage: React.FC = () => {
               <RefreshCw className="w-8 h-8 text-[#1E40AF] animate-spin" />
               <p className="text-xs font-semibold text-slate-700">
                 {liveAccuracy !== null
-                  ? `Acquiring GPS fix (±${liveAccuracy.toFixed(1)}m)...`
+                  ? `Acquiring GPS fix (±${liveAccuracy.toFixed(1)}m${liveSampleCount > 0 ? ` · ${liveSampleCount} GNSS` : ''})...`
                   : 'Acquiring high-accuracy satellite GPS...'}
               </p>
               <p className="text-[11px] text-slate-500 font-medium">
                 {gpsProgressStep}
               </p>
               <p className="text-[10px] text-slate-400">
-                Hold phone steady near a window or clear view
+                Hold phone steady near a window with Precise Location enabled
               </p>
             </div>
           )}
@@ -679,6 +848,9 @@ export const AttendLocationPage: React.FC = () => {
                 </div>
                 <div className="mt-3 pt-2 border-t border-emerald-200/60 text-[11px] text-emerald-800/80 font-mono">
                   GPS Accuracy: ±{coords.accuracy.toFixed(1)}m
+                  {coords.sampleCount && coords.sampleCount > 1
+                    ? ` (${coords.sampleCount} GNSS samples)`
+                    : ''}
                 </div>
               </div>
 
