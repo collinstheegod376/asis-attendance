@@ -440,8 +440,8 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
       const captured = snapFrame();
       if (captured) {
         setCapturedImage(captured);
-        onCapture(captured, proof);
-        onAutoSubmit(captured, proof);
+        onCapture(captured, proof); // onCapture(captured)
+        onAutoSubmit(captured, proof); // onAutoSubmit(captured)
       }
     }, 200);
   }, [snapFrame, onCapture, onAutoSubmit, challenge.type, modelTier]);
@@ -547,7 +547,7 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
     []
   );
 
-  // Main Detection Loop (Tiers A, B, and C integrated)
+  // Main Detection Loop (Tiers A, B, and C integrated with Anti-Spoofing Baselines)
   useEffect(() => {
     if (!streamActive || capturedImage || timedOut) return;
 
@@ -555,13 +555,21 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
 
     const processFrame = async () => {
       const video = videoRef.current;
-      if (!video || video.readyState < 2) {
+      if (!video || video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
         animId = requestAnimationFrame(processFrame);
         return;
       }
 
       const state = challengeStateRef.current;
       if (state.completed) return;
+
+      // Throttle inference to ~20 FPS (every 45ms) to preserve CPU and battery on mobile
+      const now = performance.now();
+      if (now - lastProcessTimeRef.current < 45) {
+        animId = requestAnimationFrame(processFrame);
+        return;
+      }
+      lastProcessTimeRef.current = now;
 
       // 15-second timeout check
       const elapsed = (Date.now() - state.startTime) / 1000;
@@ -579,7 +587,6 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
       if (landmarker) {
         try {
           // Strictly monotonic timestamp requirement
-          const now = performance.now();
           const timestamp = now > lastTimestampRef.current ? now : lastTimestampRef.current + 1;
           lastTimestampRef.current = timestamp;
 
@@ -587,17 +594,17 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
           const numFaces = results?.faceLandmarks?.length || 0;
 
           if (numFaces === 0) {
-            setProgress(0);
-            setChallenge((prev) => ({
-              ...prev,
-              progressText: 'Center your face in circle',
-            }));
+            state.baselineFrames = 0;
+            state.baselineEstablished = false;
+            state.turnFrames = 0;
+            state.smileFrames = 0;
+            updateChallengeText('Center your face in circle', 0);
           } else if (numFaces > 1) {
-            setProgress(0);
-            setChallenge((prev) => ({
-              ...prev,
-              progressText: 'Multiple faces detected — 1 person only',
-            }));
+            state.baselineFrames = 0;
+            state.baselineEstablished = false;
+            state.turnFrames = 0;
+            state.smileFrames = 0;
+            updateChallengeText('Multiple faces detected — 1 person only', 0);
           } else {
             // Exactly ONE face detected!
             const landmarks = results.faceLandmarks[0];
@@ -665,44 +672,59 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
                 ? avgBlinkScore < 0.25 || avgEAR > 0.26
                 : avgEAR > Math.min(0.26, baselineEAR * 0.88);
 
-              if (isClosed && !state.eyesClosed) {
-                state.eyesClosed = true;
-              } else if (isOpen && state.eyesClosed) {
-                state.eyesClosed = false;
-                state.blinkCount += 1;
-
-                if (state.blinkCount === 1) {
-                  state.firstBlinkTime = Date.now();
-                  setProgress(55);
-                  setChallenge((prev) => ({
-                    ...prev,
-                    progressText: 'Blink 1 detected! Blink once more...',
-                  }));
-                } else if (state.blinkCount >= 2) {
-                  const interval = (Date.now() - state.firstBlinkTime) / 1000;
-                  if (interval <= 4.0) {
-                    triggerCompletion();
-                    return;
+              // Phase 1: Establish eyes-open baseline
+              if (!state.baselineEstablished) {
+                if (isOpen) {
+                  state.baselineFrames += 1;
+                  if (state.baselineFrames >= 3) {
+                    state.baselineEstablished = true;
+                    updateChallengeText(
+                      state.blinkCount === 1 ? 'Blink once more...' : 'Face ready! Please blink twice',
+                      state.blinkCount === 1 ? 60 : 35
+                    );
                   } else {
-                    // Reset interval window if blinks were too far apart
-                    state.blinkCount = 1;
-                    state.firstBlinkTime = Date.now();
-                    setProgress(55);
+                    updateChallengeText('Hold eyes open looking at camera...', 20);
                   }
+                } else {
+                  state.baselineFrames = 0;
+                  updateChallengeText('Open eyes and look at camera', 15);
                 }
               } else {
-                if (state.blinkCount === 0) {
-                  setProgress(20);
-                  setChallenge((prev) => ({
-                    ...prev,
-                    progressText: 'Face Detected! Please blink twice',
-                  }));
+                // Phase 2: Dynamic Blink Detection
+                if (isClosed && !state.eyesClosed) {
+                  state.eyesClosed = true;
+                  state.eyesClosedTime = Date.now();
+                } else if (isOpen && state.eyesClosed) {
+                  const closedDuration = Date.now() - state.eyesClosedTime;
+                  state.eyesClosed = false;
+
+                  // Real human blink closed duration is typically 60ms - 1500ms
+                  if (closedDuration >= 60 && closedDuration <= 1500) {
+                    state.blinkCount += 1;
+
+                    if (state.blinkCount === 1) {
+                      state.firstBlinkTime = Date.now();
+                      state.baselineEstablished = false; // Require open eyes baseline before 2nd blink
+                      updateChallengeText('Blink 1 detected! Blink once more...', 60);
+                    } else if (state.blinkCount >= 2) {
+                      const interval = (Date.now() - state.firstBlinkTime) / 1000;
+                      if (interval <= 4.0 && elapsed >= 0.4) {
+                        triggerCompletion();
+                        return;
+                      } else {
+                        state.blinkCount = 1;
+                        state.firstBlinkTime = Date.now();
+                        state.baselineEstablished = false;
+                        updateChallengeText('Blink once more naturally...', 60);
+                      }
+                    }
+                  }
                 }
               }
             }
 
             // ------------------------------------------
-            // Challenge 2: Head Turn Challenge
+            // Challenge 2: Head Turn Challenge (Anti-Spoofing Protected)
             // ------------------------------------------
             else if (currentType === 'turn_left') {
               const eyeCenter = (landmarks[33].x + landmarks[263].x) / 2;
@@ -719,33 +741,45 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
               const faceWidth = Math.max(0.01, maxX - minX);
               const relNoseOffset = (noseTip.x - faceCenter) / faceWidth;
 
-              // Turn detected if yaw ratio or nose offset shifts > 0.08
-              const isTurned = Math.abs(yawRatio) > 0.08 || Math.abs(relNoseOffset) > 0.08;
+              // Phase 1: Establish Center Baseline (Prevents static angled photos)
+              const isCentered = Math.abs(relNoseOffset) < 0.07 && Math.abs(yawRatio) < 0.07;
 
-              if (isTurned) {
-                state.turnFrames += 1;
-                if (state.turnFrames === 1) {
-                  setProgress(60);
-                  setChallenge((prev) => ({
-                    ...prev,
-                    progressText: 'Turning detected, hold position...',
-                  }));
-                } else if (state.turnFrames >= 2) {
-                  triggerCompletion();
-                  return;
+              if (!state.baselineEstablished) {
+                if (isCentered) {
+                  state.baselineFrames += 1;
+                  if (state.baselineFrames >= 3) {
+                    state.baselineEstablished = true;
+                    state.baselineNoseOffset = relNoseOffset;
+                    updateChallengeText('Face centered! Now turn head slightly', 35);
+                  } else {
+                    updateChallengeText('Hold face centered looking forward...', 20);
+                  }
+                } else {
+                  state.baselineFrames = 0;
+                  updateChallengeText('Center your face looking straight ahead', 15);
                 }
               } else {
-                state.turnFrames = 0;
-                setProgress(20);
-                setChallenge((prev) => ({
-                  ...prev,
-                  progressText: 'Face Detected! Turn head slightly',
-                }));
+                // Phase 2: Dynamic Head Turn from Center Baseline
+                const deltaNose = Math.abs(relNoseOffset - state.baselineNoseOffset);
+                const isTurned = deltaNose >= 0.08 || Math.abs(yawRatio) >= 0.08;
+
+                if (isTurned) {
+                  state.turnFrames += 1;
+                  if (state.turnFrames === 1) {
+                    updateChallengeText('Turning detected, hold position...', 65);
+                  } else if (state.turnFrames >= 3 && elapsed >= 0.4) {
+                    triggerCompletion();
+                    return;
+                  }
+                } else {
+                  state.turnFrames = 0;
+                  updateChallengeText('Turn head slightly to the left', 35);
+                }
               }
             }
 
             // ------------------------------------------
-            // Challenge 3: Smile Challenge
+            // Challenge 3: Smile Challenge (Anti-Spoofing Protected)
             // ------------------------------------------
             else if (currentType === 'smile') {
               const smileLeft = blendshapes.find((b) => b.categoryName === 'mouthSmileLeft')?.score ?? 0;
@@ -763,31 +797,44 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
                     : state.restingMouthRatio * 0.92 + mouthRatio * 0.08;
               }
               const baselineMouth = state.restingMouthRatio || 0.68;
-
               const hasBlendshapes = blendshapes.length > 0;
-              const isSmiling = hasBlendshapes
-                ? avgSmile > 0.35 || mouthRatio > 0.76
-                : mouthRatio > Math.max(0.75, baselineMouth * 1.12);
 
-              if (isSmiling) {
-                state.smileFrames += 1;
-                if (state.smileFrames === 1) {
-                  setProgress(60);
-                  setChallenge((prev) => ({
-                    ...prev,
-                    progressText: 'Nice smile! Hold for a moment...',
-                  }));
-                } else if (state.smileFrames >= 2) {
-                  triggerCompletion();
-                  return;
+              // Phase 1: Establish Neutral Baseline (Prevents static smiling photos)
+              const isNeutral = avgSmile < 0.25 && mouthRatio < 0.74;
+
+              if (!state.baselineEstablished) {
+                if (isNeutral) {
+                  state.baselineFrames += 1;
+                  if (state.baselineFrames >= 3) {
+                    state.baselineEstablished = true;
+                    state.baselineSmile = avgSmile;
+                    updateChallengeText('Face ready! Now give a gentle smile', 35);
+                  } else {
+                    updateChallengeText('Relax facial expression...', 20);
+                  }
+                } else {
+                  state.baselineFrames = 0;
+                  updateChallengeText('Relax your face looking at camera', 15);
                 }
               } else {
-                state.smileFrames = 0;
-                setProgress(20);
-                setChallenge((prev) => ({
-                  ...prev,
-                  progressText: 'Face Detected! Please smile',
-                }));
+                // Phase 2: Dynamic Smile Transition
+                const smileDelta = avgSmile - state.baselineSmile;
+                const isSmiling =
+                  (hasBlendshapes && avgSmile > 0.38 && smileDelta >= 0.14) ||
+                  mouthRatio > Math.max(0.76, baselineMouth * 1.10);
+
+                if (isSmiling) {
+                  state.smileFrames += 1;
+                  if (state.smileFrames === 1) {
+                    updateChallengeText('Nice smile! Hold for a moment...', 65);
+                  } else if (state.smileFrames >= 3 && elapsed >= 0.4) {
+                    triggerCompletion();
+                    return;
+                  }
+                } else {
+                  state.smileFrames = 0;
+                  updateChallengeText('Now give a gentle smile', 35);
+                }
               }
             }
           }
@@ -809,11 +856,9 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
             if (detected && detected.length === 1) {
               nativeDetected = true;
             } else if (detected && detected.length > 1) {
-              setProgress(0);
-              setChallenge((prev) => ({
-                ...prev,
-                progressText: 'Multiple faces detected — 1 person only',
-              }));
+              state.baselineFrames = 0;
+              state.baselineEstablished = false;
+              updateChallengeText('Multiple faces detected — 1 person only', 0);
               animId = requestAnimationFrame(processFrame);
               return;
             }
@@ -826,11 +871,9 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
           const facePresent = nativeDetected || optical.hasFace;
 
           if (!facePresent) {
-            setProgress(0);
-            setChallenge((prev) => ({
-              ...prev,
-              progressText: 'Center your face in circle',
-            }));
+            state.baselineFrames = 0;
+            state.baselineEstablished = false;
+            updateChallengeText('Center your face in circle', 0);
           } else {
             // Live micro-movement tracking
             motionHistoryRef.current.push({ x: optical.cx, y: optical.cy, delta: optical.avgDelta });
@@ -853,76 +896,71 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
             const currentType = challenge.type;
 
             if (currentType === 'blink') {
-              // Optical blink: transient dip/spike in eye band difference
               const isEyeMotion = optical.eyeBandDelta > 15;
               if (isEyeMotion && !state.eyesClosed) {
                 state.eyesClosed = true;
+                state.eyesClosedTime = Date.now();
               } else if (!isEyeMotion && state.eyesClosed) {
+                const closedDuration = Date.now() - state.eyesClosedTime;
                 state.eyesClosed = false;
-                state.blinkCount += 1;
 
-                if (state.blinkCount === 1) {
-                  state.firstBlinkTime = Date.now();
-                  setProgress(55);
-                  setChallenge((prev) => ({
-                    ...prev,
-                    progressText: 'Blink 1 detected! Blink once more...',
-                  }));
-                } else if (state.blinkCount >= 2) {
-                  triggerCompletion();
-                  return;
+                if (closedDuration >= 60 && closedDuration <= 1500) {
+                  state.blinkCount += 1;
+
+                  if (state.blinkCount === 1) {
+                    state.firstBlinkTime = Date.now();
+                    updateChallengeText('Blink 1 detected! Blink once more...', 60);
+                  } else if (state.blinkCount >= 2 && elapsed >= 0.4) {
+                    triggerCompletion();
+                    return;
+                  }
                 }
               } else if (state.blinkCount === 0) {
-                setProgress(20);
-                setChallenge((prev) => ({
-                  ...prev,
-                  progressText: 'Face Detected! Please blink twice',
-                }));
+                updateChallengeText('Face Detected! Please blink twice', 30);
               }
             } else if (currentType === 'turn_left') {
-              // Optical head turn: horizontal centroid shift
               const shift = Math.abs(optical.cx - state.neutralCentroidX);
-              if (shift > 7) {
-                state.turnFrames += 1;
-                if (state.turnFrames === 1) {
-                  setProgress(60);
-                  setChallenge((prev) => ({
-                    ...prev,
-                    progressText: 'Turning detected, hold position...',
-                  }));
-                } else if (state.turnFrames >= 2) {
-                  triggerCompletion();
-                  return;
+
+              // Phase 1: Centered baseline
+              if (!state.baselineEstablished) {
+                if (shift < 4) {
+                  state.baselineFrames += 1;
+                  if (state.baselineFrames >= 3) {
+                    state.baselineEstablished = true;
+                    updateChallengeText('Face centered! Turn head slightly', 35);
+                  } else {
+                    updateChallengeText('Hold face centered...', 20);
+                  }
+                } else {
+                  state.baselineFrames = 0;
+                  updateChallengeText('Center your face in circle', 15);
                 }
               } else {
-                state.turnFrames = 0;
-                setProgress(20);
-                setChallenge((prev) => ({
-                  ...prev,
-                  progressText: 'Face Detected! Turn head slightly',
-                }));
+                if (shift > 7) {
+                  state.turnFrames += 1;
+                  if (state.turnFrames === 1) {
+                    updateChallengeText('Turning detected, hold position...', 65);
+                  } else if (state.turnFrames >= 3 && elapsed >= 0.4) {
+                    triggerCompletion();
+                    return;
+                  }
+                } else {
+                  state.turnFrames = 0;
+                  updateChallengeText('Turn head slightly to the left', 35);
+                }
               }
             } else if (currentType === 'smile') {
-              // Optical smile: mouth band luminance variance expansion
               if (optical.mouthBandDelta > 14) {
                 state.smileFrames += 1;
                 if (state.smileFrames === 1) {
-                  setProgress(60);
-                  setChallenge((prev) => ({
-                    ...prev,
-                    progressText: 'Nice smile! Hold for a moment...',
-                  }));
-                } else if (state.smileFrames >= 2) {
+                  updateChallengeText('Nice smile! Hold for a moment...', 65);
+                } else if (state.smileFrames >= 3 && elapsed >= 0.4) {
                   triggerCompletion();
                   return;
                 }
               } else {
                 state.smileFrames = 0;
-                setProgress(20);
-                setChallenge((prev) => ({
-                  ...prev,
-                  progressText: 'Face Detected! Please smile',
-                }));
+                updateChallengeText('Face Detected! Please smile', 30);
               }
             }
           }
@@ -946,10 +984,14 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
     triggerCompletion,
     analyzeOpticalFrame,
     stopStream,
+    updateChallengeText,
   ]);
 
   // Retake photo / Retry after timeout
   const handleRetry = () => {
+    if (onRetake) {
+      onRetake();
+    }
     setCapturedImage(null);
     setTimedOut(false);
     setProgress(0);
@@ -957,12 +999,17 @@ export const CameraHUD: React.FC<CameraHUDProps> = ({
     challengeStateRef.current = {
       blinkCount: 0,
       eyesClosed: false,
+      eyesClosedTime: 0,
       firstBlinkTime: 0,
       restingEAR: 0,
       turnFrames: 0,
       smileFrames: 0,
       restingMouthRatio: 0,
       neutralCentroidX: 60,
+      baselineFrames: 0,
+      baselineEstablished: false,
+      baselineNoseOffset: 0,
+      baselineSmile: 0,
       microMovementVerified: false,
       startTime: Date.now(),
       completed: false,
