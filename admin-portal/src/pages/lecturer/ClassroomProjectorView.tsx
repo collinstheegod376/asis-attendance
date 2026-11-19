@@ -6,18 +6,10 @@ import {
   Minimize2,
   Volume2,
   VolumeX,
-  Users,
-  Clock,
-  ShieldCheck,
-  CheckCircle2,
-  AlertCircle,
   Copy,
   Check,
   ArrowLeft,
   RefreshCw,
-  PowerOff,
-  Sparkles,
-  MapPin,
 } from 'lucide-react';
 import { LecturerService } from '../../services/lecturerService';
 import { LectureSession, AttendanceRecord } from '../../types';
@@ -45,7 +37,7 @@ export const ClassroomProjectorView: React.FC = () => {
   const previousCountRef = useRef(0);
   const audioContextRef = useRef<AudioContext | null>(null);
 
-  // Play pleasant check-in chime using Web Audio API
+  // Subtle check-in chime using Web Audio API
   const playCheckinChime = useCallback(() => {
     if (!soundEnabled) return;
     try {
@@ -62,8 +54,8 @@ export const ClassroomProjectorView: React.FC = () => {
       const gain = ctx.createGain();
 
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(587.33, now); // D5
-      osc.frequency.exponentialRampToValueAtTime(880, now + 0.15); // A5
+      osc.frequency.setValueAtTime(587.33, now);
+      osc.frequency.exponentialRampToValueAtTime(880, now + 0.15);
 
       gain.gain.setValueAtTime(0.15, now);
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
@@ -90,7 +82,6 @@ export const ClassroomProjectorView: React.FC = () => {
         return;
       }
 
-      // Fix SEC-17: Course ownership verification
       if (user && user.role === 'lecturer' && s.lecturer_id && s.lecturer_id !== user.id) {
         alert('You do not have access to this lecture session.');
         navigate('/lecturer/dashboard', { replace: true });
@@ -106,7 +97,7 @@ export const ClassroomProjectorView: React.FC = () => {
     };
   }, [sessionId, user, navigate]);
 
-  // Fix QA-17: Generate QR ONLY when the token changes, NEVER in a 2.5s poll!
+  // Generate QR only when the token changes
   useEffect(() => {
     if (!session) return;
 
@@ -126,9 +117,9 @@ export const ClassroomProjectorView: React.FC = () => {
     })
       .then(url => setQrDataUrl(url))
       .catch(err => console.error('Failed to generate QR code:', err));
-  }, [session?.raw_token, session?.id]);
+  }, [session?.raw_token, session?.id, session?.latitude, session?.longitude]);
 
-  // Poll only attendance records every 5000ms (5s) or subscribe via Supabase Realtime
+  // Poll attendance records every 5s and subscribe via Supabase Realtime
   useEffect(() => {
     if (!sessionId) return;
     let isMounted = true;
@@ -147,7 +138,6 @@ export const ClassroomProjectorView: React.FC = () => {
     fetchAttendees();
     const interval = setInterval(fetchAttendees, 5000);
 
-    // Lightweight Supabase Realtime channel for instant check-in updates
     let channel: any = null;
     if (isSupabaseConfigured && supabase) {
       try {
@@ -190,7 +180,7 @@ export const ClassroomProjectorView: React.FC = () => {
 
         if (session.status === 'closed' || session.status === 'revoked') {
           setSessionState('closed');
-          setTimeRemaining(session.status === 'revoked' ? 'SESSION REVOKED' : 'SESSION CLOSED');
+          setTimeRemaining(session.status === 'revoked' ? 'Revoked' : 'Closed');
           return;
         }
 
@@ -202,7 +192,7 @@ export const ClassroomProjectorView: React.FC = () => {
 
         if (nowMs >= expiresMs) {
           setSessionState('expired');
-          setTimeRemaining('00:00:00 (EXPIRED)');
+          setTimeRemaining('00:00:00');
         } else {
           if (nowMs <= graceEndMs) {
             setSessionState('grace');
@@ -224,14 +214,11 @@ export const ClassroomProjectorView: React.FC = () => {
     return () => clearInterval(timer);
   }, [session]);
 
-  // Fullscreen handlers
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {});
-    } else {
-      if (document.exitFullscreen) {
-        document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {});
-      }
+    } else if (document.exitFullscreen) {
+      document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {});
     }
   };
 
@@ -258,7 +245,7 @@ export const ClassroomProjectorView: React.FC = () => {
     if (!session || !user) return;
     if (
       window.confirm(
-        'Are you sure you want to end and close this lecture session early? Students will no longer be able to scan or submit attendance.'
+        'End this lecture session early? Students will no longer be able to scan or submit attendance.'
       )
     ) {
       const res = await LecturerService.closeLectureSession(session.id, {
@@ -273,26 +260,25 @@ export const ClassroomProjectorView: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white text-center">
-        <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
-        <p className="text-sm">Initializing Classroom Projector View...</p>
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-slate-200 text-center">
+        <div className="w-8 h-8 border-2 border-slate-400 border-t-transparent rounded-full animate-spin mb-3" />
+        <p className="text-sm text-slate-400">Loading session display...</p>
       </div>
     );
   }
 
   if (!session) {
     return (
-      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white text-center">
-        <AlertCircle className="w-16 h-16 text-rose-400 mb-4" />
-        <h2 className="text-2xl font-bold mb-2">Lecture Session Not Found</h2>
-        <p className="text-slate-400 mb-6 max-w-md">
-          The requested session ID does not exist or may have been deleted.
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-slate-100 text-center">
+        <h2 className="text-xl font-semibold mb-2">Lecture session not found</h2>
+        <p className="text-sm text-slate-400 mb-6 max-w-md">
+          The requested session does not exist or may have been removed.
         </p>
         <button
           onClick={() => navigate('/lecturer/dashboard')}
-          className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition cursor-pointer"
+          className="px-5 py-2.5 bg-slate-100 hover:bg-white text-slate-950 text-sm font-medium rounded-lg transition-colors cursor-pointer"
         >
-          Return to Dashboard
+          Return to dashboard
         </button>
       </div>
     );
@@ -305,64 +291,61 @@ export const ClassroomProjectorView: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans select-none overflow-x-hidden">
-      {/* Top Bar for Projector */}
-      <header className="px-6 sm:px-10 py-4 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 flex items-center justify-between gap-4 sticky top-0 z-50">
-        {/* Course & Institution Info */}
-        <div className="flex items-center gap-4">
-          <Link
-            to={`/lecturer/courses/${session.course_id}`}
-            className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
-            title="Exit Projector Mode"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </Link>
+      {/* Compact Responsive Header — Zero Overflow */}
+      <header className="w-full px-4 sm:px-8 py-3 bg-slate-900 border-b border-white/[0.08] sticky top-0 z-50">
+        <div className="max-w-[1440px] mx-auto flex items-center justify-between gap-3">
+          {/* Left: Back button, Logo, Course Title */}
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            <Link
+              to={`/lecturer/courses/${session.course_id}`}
+              className="w-9 h-9 rounded-lg bg-slate-800/80 hover:bg-slate-800 border border-white/[0.08] flex items-center justify-center text-slate-300 transition-colors shrink-0"
+              title="Back to course"
+            >
+              <ArrowLeft className="w-4 h-4 stroke-[1.75]" />
+            </Link>
 
-          <img
-            src="/adun-logo.png"
-            alt="ADUN Logo"
-            className="w-12 h-12 object-contain drop-shadow-md rounded-xl bg-white/10 p-1 border border-white/10"
-          />
-
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-xl sm:text-2xl font-black tracking-tight text-white">
-                {session.course_code || 'COURSE'}
-              </span>
-              <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">
-                CLASSROOM PROJECTOR MODE
-              </span>
-            </div>
-            <p className="text-xs sm:text-sm text-slate-300 font-medium truncate max-w-md sm:max-w-xl">
-              {session.course_title} &bull; Lecturer:{' '}
-              <span className="text-white font-semibold">
-                {session.lecturer_name || user?.name || 'Lecturer in Charge'}
-              </span>
-            </p>
-          </div>
-        </div>
-
-        {/* Live Status, Clock & Action Controls */}
-        <div className="flex items-center gap-3 sm:gap-5">
-          {/* Lagos Time */}
-          <div className="hidden lg:flex flex-col items-end">
-            <span className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">
-              WAT (Lagos Time)
-            </span>
-            <span className="font-mono text-base font-bold text-slate-200">{lagosClock}</span>
-          </div>
-
-          {/* Time Countdown Pill */}
-          <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-800/80 border border-slate-700">
-            <Clock
-              className={`w-4 h-4 ${sessionState === 'expired' ? 'text-rose-400' : 'text-blue-400'}`}
+            <img
+              src="/adun-logo.png"
+              alt="ADUN"
+              className="w-8 h-8 sm:w-9 sm:h-9 object-contain shrink-0"
             />
-            <div className="flex flex-col">
-              <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
-                {sessionState === 'grace' ? 'Grace Period Active' : 'Time Remaining'}
+
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline gap-2 min-w-0">
+                <span className="text-base sm:text-lg font-semibold text-white shrink-0">
+                  {session.course_code || 'Course'}
+                </span>
+                <span className="text-xs sm:text-sm text-slate-400 truncate">
+                  {session.course_title}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 truncate">
+                {session.lecturer_name || user?.name || 'Lecturer'}
+              </p>
+            </div>
+          </div>
+
+          {/* Right: Countdown, Controls, End Session */}
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <div className="hidden lg:flex flex-col items-end pr-2 border-r border-white/[0.08]">
+              <span className="text-[11px] text-slate-500">Lagos (WAT)</span>
+              <span className="font-mono text-xs tabular-nums text-slate-300">{lagosClock}</span>
+            </div>
+
+            {/* Countdown */}
+            <div className="px-2.5 sm:px-3.5 py-1.5 rounded-lg bg-slate-800/70 border border-white/[0.08] flex flex-col items-end">
+              <span className="text-[10px] text-slate-400 leading-none mb-1">
+                {sessionState === 'grace'
+                  ? 'Grace period'
+                  : sessionState === 'expired'
+                  ? 'Expired'
+                  : sessionState === 'closed'
+                  ? 'Status'
+                  : 'Remaining'}
               </span>
               <span
-                className={`font-mono text-sm sm:text-base font-extrabold ${
-                  sessionState === 'expired'
+                className={`font-mono text-xs sm:text-sm font-semibold tabular-nums leading-none ${
+                  sessionState === 'expired' || sessionState === 'closed'
                     ? 'text-rose-400'
                     : sessionState === 'grace'
                     ? 'text-amber-300'
@@ -372,233 +355,200 @@ export const ClassroomProjectorView: React.FC = () => {
                 {timeRemaining}
               </span>
             </div>
-          </div>
 
-          {/* Sound Chime Toggle */}
-          <button
-            onClick={() => setSoundEnabled(!soundEnabled)}
-            className={`p-2.5 rounded-xl border transition cursor-pointer ${
-              soundEnabled
-                ? 'bg-blue-600/20 border-blue-500/40 text-blue-300 hover:bg-blue-600/30'
-                : 'bg-slate-800 border-slate-700 text-slate-500 hover:text-slate-300'
-            }`}
-            title={soundEnabled ? 'Chime sound enabled on check-in' : 'Chime sound muted'}
-          >
-            {soundEnabled ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
-          </button>
-
-          {/* Fullscreen Toggle */}
-          <button
-            onClick={toggleFullscreen}
-            className="p-2.5 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-300 transition cursor-pointer"
-            title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen (F11)'}
-          >
-            {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
-          </button>
-
-          {/* End Session Button */}
-          {session.status === 'active' && (
+            {/* Sound Toggle */}
             <button
-              onClick={handleCloseSession}
-              className="hidden sm:inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 text-xs font-semibold transition cursor-pointer"
+              onClick={() => setSoundEnabled(!soundEnabled)}
+              className={`w-9 h-9 rounded-lg border flex items-center justify-center transition-colors cursor-pointer ${
+                soundEnabled
+                  ? 'bg-slate-800 border-white/[0.12] text-slate-200 hover:bg-slate-700'
+                  : 'bg-slate-900 border-white/[0.06] text-slate-500 hover:text-slate-300'
+              }`}
+              title={soundEnabled ? 'Mute check-in sound' : 'Unmute check-in sound'}
             >
-              <PowerOff className="w-4 h-4" />
-              <span>End Session</span>
+              {soundEnabled ? (
+                <Volume2 className="w-4 h-4 stroke-[1.75]" />
+              ) : (
+                <VolumeX className="w-4 h-4 stroke-[1.75]" />
+              )}
             </button>
-          )}
+
+            {/* Fullscreen Toggle (Desktop / Tablet) */}
+            <button
+              onClick={toggleFullscreen}
+              className="hidden sm:flex w-9 h-9 rounded-lg bg-slate-800 border border-white/[0.08] hover:bg-slate-700 text-slate-300 items-center justify-center transition-colors cursor-pointer"
+              title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+            >
+              {isFullscreen ? (
+                <Minimize2 className="w-4 h-4 stroke-[1.75]" />
+              ) : (
+                <Maximize2 className="w-4 h-4 stroke-[1.75]" />
+              )}
+            </button>
+
+            {/* End Session */}
+            {session.status === 'active' && (
+              <button
+                onClick={handleCloseSession}
+                className="px-3 py-2 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/25 text-xs font-medium transition-colors cursor-pointer"
+              >
+                <span className="sm:hidden">End</span>
+                <span className="hidden sm:inline">End session</span>
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
-      {/* Main Presentation Stage */}
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 p-6 sm:p-10 max-w-[1600px] mx-auto w-full items-center">
-        {/* Left Column: QR Code Display Card (8 cols) */}
-        <div className="lg:col-span-7 xl:col-span-8 flex flex-col items-center justify-center text-center">
-          <div className="w-full max-w-xl bg-white rounded-3xl p-6 sm:p-8 shadow-2xl border-4 border-blue-600/40 relative">
-            {/* Institutional Header with Official ADUN Logo */}
-            <div className="flex items-center justify-center gap-3 pb-3 mb-3 border-b border-slate-100">
-              <img src="/adun-logo.png" alt="ADUN Logo" className="w-12 h-12 object-contain" />
-              <div className="text-left">
-                <span className="text-xs font-black tracking-wide text-blue-950 uppercase block">
-                  Admiralty University of Nigeria
-                </span>
-                <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">
-                  Classroom Attendance Terminal &bull; Option 2 Strict Device Lock
-                </span>
+      {/* Main Content Grid */}
+      <main className="flex-1 w-full max-w-[1440px] mx-auto px-4 sm:px-8 py-5 sm:py-8 grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-8 items-start">
+        {/* Left Column: High-Contrast QR Sheet */}
+        <div className="lg:col-span-7 flex flex-col items-center">
+          <div className="w-full max-w-lg bg-white text-slate-900 rounded-2xl p-5 sm:p-8 border border-slate-200">
+            {/* Institution & Session Title */}
+            <div className="flex items-center justify-between gap-3 pb-4 mb-5 border-b border-slate-100">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <img src="/adun-logo.png" alt="ADUN" className="w-9 h-9 object-contain shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-slate-900 truncate">
+                    Admiralty University of Nigeria
+                  </p>
+                  <p className="text-xs text-slate-500 truncate">
+                    {hasLoc
+                      ? `${session.location_name || 'Classroom location'} (${session.radius_m || 350}m boundary)`
+                      : 'Attendance check-in'}
+                  </p>
+                </div>
               </div>
-            </div>
-
-            {/* Session Title Header */}
-            <div className="mb-4">
-              <span className="inline-block px-3 py-1 rounded-full bg-blue-100 text-blue-900 text-xs font-bold tracking-wide uppercase mb-2">
-                Scan With Phone Camera
+              <span className="text-xs font-mono text-slate-500 shrink-0">
+                {session.course_code}
               </span>
-              <h3 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight leading-tight">
-                {session.title}
-              </h3>
-              {session.latitude != null && session.longitude != null ? (
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold mt-2">
-                  <MapPin className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>Classroom Geofence: {session.location_name || 'Classroom'} (&plusmn;{session.radius_m || 50}m)</span>
-                </div>
-              ) : (
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200 text-xs font-semibold mt-2">
-                  <MapPin className="w-3.5 h-3.5 text-slate-500" />
-                  <span>Campus Boundary Geofence</span>
-                </div>
-              )}
             </div>
 
-            {/* High-Contrast Static QR Code (Rendered only on token change) */}
-            <div className="relative inline-block my-2 p-3 bg-white rounded-2xl shadow-inner border border-slate-100">
+            <div className="text-center mb-4">
+              <h1 className="text-lg sm:text-xl font-semibold text-slate-900 tracking-tight break-words">
+                {session.title}
+              </h1>
+              <p className="text-xs text-slate-500 mt-1">
+                Scan with your phone camera or open the link below
+              </p>
+            </div>
+
+            {/* QR Code */}
+            <div className="relative w-full max-w-[240px] sm:max-w-[320px] aspect-square mx-auto my-2 p-2.5 bg-white rounded-xl border border-slate-200/80 flex items-center justify-center">
               {qrDataUrl ? (
                 <img
                   src={qrDataUrl}
-                  alt="Session Static QR Code"
-                  className="w-72 h-72 sm:w-96 sm:h-96 object-contain rounded-xl"
+                  alt="Attendance QR Code"
+                  className="w-full h-full object-contain"
                 />
               ) : (
-                <div className="w-72 h-72 sm:w-96 sm:h-96 flex items-center justify-center bg-slate-50 text-slate-400">
-                  <RefreshCw className="w-10 h-10 animate-spin text-blue-600" />
+                <div className="w-full h-full flex items-center justify-center bg-slate-50 text-slate-400 rounded-lg">
+                  <RefreshCw className="w-7 h-7 animate-spin text-slate-400" />
                 </div>
               )}
 
-              {/* Status Overlay if Expired/Closed */}
-              {sessionState === 'expired' && (
-                <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-xs rounded-2xl flex flex-col items-center justify-center text-white p-6">
-                  <AlertCircle className="w-16 h-16 text-rose-500 mb-3" />
-                  <span className="text-2xl font-black tracking-tight">SESSION EXPIRED</span>
-                  <p className="text-xs text-slate-300 mt-1 max-w-xs">
-                    This attendance code has expired by duration limit.
-                  </p>
-                </div>
-              )}
-
-              {sessionState === 'closed' && (
-                <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-xs rounded-2xl flex flex-col items-center justify-center text-white p-6">
-                  <PowerOff className="w-16 h-16 text-rose-500 mb-3" />
-                  <span className="text-2xl font-black tracking-tight">
-                    {session.status === 'revoked' ? 'SESSION REVOKED' : 'SESSION CLOSED'}
+              {/* Expired / Closed Overlay */}
+              {(sessionState === 'expired' || sessionState === 'closed') && (
+                <div className="absolute inset-0 bg-slate-950/85 rounded-xl flex flex-col items-center justify-center text-white p-5 text-center">
+                  <span className="text-lg font-semibold">
+                    {sessionState === 'expired'
+                      ? 'Session expired'
+                      : session.status === 'revoked'
+                      ? 'Session revoked'
+                      : 'Session closed'}
                   </span>
-                  <p className="text-xs text-slate-300 mt-1 max-w-xs">
-                    Attendance collection is locked.
+                  <p className="text-xs text-slate-300 mt-1 max-w-[220px]">
+                    Attendance submissions are no longer accepted for this session.
                   </p>
                 </div>
               )}
             </div>
 
-            {/* Join URL and Copy Action */}
-            <div className="mt-4 pt-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3 text-left">
-              <div className="truncate text-xs font-mono text-slate-600 bg-slate-100 px-3 py-2 rounded-xl flex-1 w-full">
-                <span className="text-slate-400 block text-[10px] uppercase font-sans font-bold">Direct Link:</span>
-                <span className="truncate block font-semibold text-blue-700">{joinUrl}</span>
+            {/* Direct Link & Copy Control */}
+            <div className="mt-5 pt-4 border-t border-slate-100">
+              <div className="flex items-center gap-2 bg-slate-50 border border-slate-200/90 rounded-xl p-1.5 pl-3">
+                <span className="text-xs font-mono text-slate-600 truncate flex-1 select-all">
+                  {joinUrl}
+                </span>
+                <button
+                  onClick={handleCopyLink}
+                  className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-medium text-xs flex items-center gap-1.5 transition-colors shrink-0 cursor-pointer"
+                >
+                  {copied ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-400 stroke-[2]" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5 stroke-[1.75]" />
+                  )}
+                  <span>{copied ? 'Copied' : 'Copy link'}</span>
+                </button>
               </div>
-              <button
-                onClick={handleCopyLink}
-                className="w-full sm:w-auto px-4 py-2 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-medium text-xs flex items-center justify-center gap-1.5 transition shrink-0 cursor-pointer"
-              >
-                {copied ? <Check className="w-4 h-4 text-emerald-300" /> : <Copy className="w-4 h-4" />}
-                <span>{copied ? 'Copied' : 'Copy Link'}</span>
-              </button>
-            </div>
-
-            {/* Security note */}
-            <div className="mt-3 flex items-center justify-center gap-1.5 text-[11px] text-slate-600 font-medium bg-slate-50 py-2 px-3 rounded-xl border border-slate-100">
-              <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-              <span>Option 2 Strict Device Binding Enforced &bull; Static Token &bull; Live WAT Verified</span>
             </div>
           </div>
         </div>
 
-        {/* Right Column: Live Attendees Counter & Stream Feed (4 cols) */}
-        <div className="lg:col-span-5 xl:col-span-4 flex flex-col h-full space-y-4">
-          {/* Big Live Attendee Counter Card */}
-          <div className="bg-slate-900 rounded-3xl p-6 border border-slate-800 shadow-xl relative overflow-hidden">
-            <div className="flex items-center justify-between mb-2 relative z-10">
-              <div className="flex items-center gap-2">
-                <img src="/adun-logo.png" alt="ADUN Logo" className="w-6 h-6 object-contain rounded-md bg-white/10 p-0.5" />
-                <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-                  Live Attendance Count
-                </span>
-              </div>
-              <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-semibold">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-                Real-Time
+        {/* Right Column: Attendance Count & Check-in Ledger */}
+        <div className="lg:col-span-5 flex flex-col gap-4 w-full">
+          {/* Attendance Count Card */}
+          <div className="bg-slate-900 rounded-2xl p-5 border border-white/[0.08]">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-slate-400">Attendance count</span>
+              <span className="text-xs text-slate-500">
+                {sessionState === 'active' || sessionState === 'grace' ? 'Live' : 'Final'}
               </span>
             </div>
 
-            <div className="flex items-baseline gap-3 my-2 relative z-10">
-              <span className="text-5xl sm:text-6xl font-black text-white tracking-tight">
+            <div className="flex items-baseline gap-2.5 mt-2">
+              <span className="text-4xl sm:text-5xl font-semibold text-white tracking-tight tabular-nums">
                 {attendees.length}
               </span>
-              <span className="text-slate-400 font-medium text-sm">students recorded</span>
+              <span className="text-xs text-slate-400">
+                {attendees.length === 1 ? 'student recorded' : 'students recorded'}
+              </span>
             </div>
-
-            <p className="text-xs text-slate-400 relative z-10">
-              Students in the lecture hall are automatically displayed below as their verification passes.
-            </p>
           </div>
 
-          {/* Live Feed Container */}
-          <div className="bg-slate-900/80 rounded-3xl p-6 border border-slate-800 shadow-xl flex-1 flex flex-col min-h-[360px] max-h-[500px]">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h4 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-amber-400" />
-                Recent Check-ins
-              </h4>
-              <span className="text-xs text-slate-500 font-mono">
-                {attendees.length} check-in{attendees.length !== 1 ? 's' : ''}
+          {/* Check-in Ledger */}
+          <div className="bg-slate-900 rounded-2xl p-5 border border-white/[0.08] flex flex-col min-h-[300px] max-h-[480px]">
+            <div className="flex items-center justify-between pb-3 border-b border-white/[0.08]">
+              <h2 className="text-sm font-medium text-slate-200">Recent check-ins</h2>
+              <span className="text-xs text-slate-500 font-mono tabular-nums">
+                {attendees.length} total
               </span>
             </div>
 
-            {/* Scrollable Feed List */}
-            <div className="flex-1 overflow-y-auto space-y-2.5 pt-3 pr-1">
+            <div className="flex-1 overflow-y-auto divide-y divide-white/[0.06] pt-1">
               {attendees.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-500">
-                  <div className="w-12 h-12 rounded-2xl bg-slate-800 flex items-center justify-center text-slate-400 mb-3 animate-pulse">
-                    <Users className="w-6 h-6" />
-                  </div>
-                  <p className="text-sm font-semibold text-slate-300">Waiting for check-ins...</p>
-                  <p className="text-xs text-slate-500 max-w-xs mt-1">
-                    Ask students to scan the QR code centered on the screen.
+                <div className="h-48 flex flex-col items-center justify-center text-center px-4">
+                  <p className="text-sm text-slate-400">No check-ins recorded yet</p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Students appear here as soon as verification completes
                   </p>
                 </div>
               ) : (
                 attendees.map((item, index) => (
                   <div
                     key={item.id || index}
-                    className="p-3 rounded-2xl bg-slate-800/60 border border-slate-700/60 flex items-center justify-between gap-3 hover:bg-slate-800 transition"
+                    className="py-3 flex items-center justify-between gap-3"
                   >
-                    <div className="flex items-center gap-3 truncate">
-                      <div
-                        className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
-                          item.status === 'present'
-                            ? 'bg-emerald-500/20 text-emerald-400'
-                            : 'bg-amber-500/20 text-amber-400'
-                        }`}
-                      >
-                        <CheckCircle2 className="w-4 h-4" />
-                      </div>
-                      <div className="truncate">
-                        <p className="text-sm font-bold text-white truncate">
-                          {item.student_name}
-                        </p>
-                        <p className="text-xs font-mono text-blue-300 font-medium">
-                          {item.matric_no}
-                        </p>
-                      </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-slate-100 truncate">
+                        {item.student_name}
+                      </p>
+                      <p className="text-xs font-mono text-slate-400 truncate mt-0.5">
+                        {item.matric_no}
+                      </p>
                     </div>
 
                     <div className="flex flex-col items-end shrink-0">
                       <span
-                        className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${
-                          item.status === 'present'
-                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                            : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                        className={`text-xs font-medium ${
+                          item.status === 'present' ? 'text-emerald-400' : 'text-amber-400'
                         }`}
                       >
-                        {item.status}
+                        {item.status === 'present' ? 'Present' : 'Late'}
                       </span>
-                      <span className="text-[10px] font-mono text-slate-400 mt-1">
+                      <span className="text-[11px] font-mono tabular-nums text-slate-500 mt-0.5">
                         {formatWATTime(item.signed_at)}
                       </span>
                     </div>
@@ -610,9 +560,9 @@ export const ClassroomProjectorView: React.FC = () => {
         </div>
       </main>
 
-      {/* Footer Banner */}
-      <footer className="px-6 py-3 bg-slate-900 border-t border-slate-800 text-center text-xs text-slate-500">
-        Admiralty University of Nigeria Attendance System &bull; Static QR Protection &bull; Africa/Lagos Timezone
+      {/* Footer */}
+      <footer className="px-4 sm:px-8 py-3 bg-slate-900/60 border-t border-white/[0.06] text-center text-xs text-slate-500">
+        Admiralty University of Nigeria &bull; Africa/Lagos (WAT)
       </footer>
     </div>
   );
